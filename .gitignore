@@ -1,0 +1,13 @@
+# Bảo vệ thông tin nhạy cảm
+config.json
+
+# Logs
+logs/
+*.log
+
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
