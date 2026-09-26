@@ -59,6 +59,10 @@ const AVATAR_PATH = path.join(__dirname, "ivyseal_avatar.gif");
 let config = {};
 try { config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); }
 catch (_) { config = { botToken: "", clientId: "", guildId: "" }; }
+// Ưu tiên biến môi trường (Railway/hosting), fallback về config.json khi chạy local
+if (process.env.BOT_TOKEN)  config.botToken = process.env.BOT_TOKEN;
+if (process.env.CLIENT_ID)  config.clientId  = process.env.CLIENT_ID;
+if (process.env.GUILD_ID)   config.guildId   = process.env.GUILD_ID;
 
 function loadWhitelist() {
     try { return JSON.parse(fs.readFileSync(WHITELIST_PATH, "utf8")); }
