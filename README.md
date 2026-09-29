@@ -71,4 +71,4 @@ Chỉ cần click đúp vào file **`Start-Ivyseal-Bot.bat`** (hoặc mở termi
 - **`/whitelist`**: Thêm hoặc cập nhật tài khoản vào whitelist qua Modal bí mật (tự động mã hóa AES-256-GCM).
 - **`/unwhitelist [user]`**: Xóa tài khoản khỏi whitelist (thành viên chỉ có thể xóa chính mình, Admin có thể chọn xóa người khác).
 - **`/whitelisted`**: Xem danh sách các tài khoản đã được whitelist trong hệ thống (*Chỉ Quản trị viên*).
-- **`/autoschedule <ngay>`**: Lên lịch tự động cày ọp hàng tuần với hàng đợi song song và tự động nhận thưởng (*Chỉ Quản trị viên*).
+- **`/autoschedule <ngay> [gio]`**: Lên lịch tự động cày ọp hàng tuần với tùy chọn giờ chạy và hàng đợi song song (*Chỉ Quản trị viên*).

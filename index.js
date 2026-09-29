@@ -82,7 +82,7 @@ function saveWhitelist(data) {
 }
 function loadSchedule() {
     try { return JSON.parse(fs.readFileSync(SCHEDULE_PATH, "utf8")); }
-    catch (_) { return { day: null, channelId: null, lastRunDate: null }; }
+    catch (_) { return { day: null, hour: 8, channelId: null, lastRunDate: null }; }
 }
 function saveSchedule(data) {
     fs.writeFileSync(SCHEDULE_PATH, JSON.stringify(data, null, 2), "utf8");
@@ -220,6 +220,13 @@ const commands = [
                     { name: "Chủ Nhật", value: "0" },
                     { name: "Tắt lịch", value: "-1" }
                 )
+        )
+        .addIntegerOption(opt =>
+            opt.setName("gio")
+                .setDescription("Giờ chạy trong ngày (0 - 23, mặc định là 8)")
+                .setRequired(false)
+                .setMinValue(0)
+                .setMaxValue(23)
         )
 ].map(cmd => cmd.toJSON());
 
@@ -671,12 +678,13 @@ function startScheduleChecker() {
             const currentDay = now.getDay();
             const todayDate = now.toISOString().split("T")[0];
 
-            // Chạy nếu đúng ngày, chưa chạy hôm nay, và từ 8h sáng trở đi
-            if (currentDay === schedule.day && schedule.lastRunDate !== todayDate && now.getHours() >= 8) {
+            // Chạy nếu đúng ngày, chưa chạy hôm nay, và từ giờ đã đặt trở đi
+            const targetHour = (schedule.hour !== undefined && schedule.hour !== null) ? schedule.hour : 8;
+            if (currentDay === schedule.day && schedule.lastRunDate !== todayDate && now.getHours() >= targetHour) {
                 schedule.lastRunDate = todayDate;
                 saveSchedule(schedule);
 
-                console.log(`[Auto-Schedule] Đã đến ${DAY_NAMES[schedule.day]} — bắt đầu chạy tự động!`);
+                console.log(`[Auto-Schedule] Đã đến ${DAY_NAMES[schedule.day]} (từ ${targetHour}:00) — bắt đầu chạy tự động!`);
 
                 const channel = client.channels.cache.get(schedule.channelId);
                 if (!channel) {
@@ -712,7 +720,8 @@ client.once(Events.ClientReady, async () => {
 
     const schedule = loadSchedule();
     if (schedule.day !== null && schedule.day >= 0) {
-        console.log(`[Scheduler] Lịch hiện tại: ${DAY_NAMES[schedule.day]} hàng tuần.`);
+        const targetHour = (schedule.hour !== undefined && schedule.hour !== null) ? schedule.hour : 8;
+        console.log(`[Scheduler] Lịch hiện tại: ${DAY_NAMES[schedule.day]} lúc ${targetHour}:00 hàng tuần.`);
     }
 });
 
@@ -909,7 +918,7 @@ client.on("interactionCreate", async (interaction) => {
 
                 // Tắt lịch
                 if (dayValue < 0) {
-                    saveSchedule({ day: null, channelId: null, lastRunDate: null });
+                    saveSchedule({ day: null, hour: 8, channelId: null, lastRunDate: null });
                     console.log("[Auto-Schedule] Đã tắt lịch tự động.");
                     try {
                         await interaction.reply({
@@ -922,20 +931,25 @@ client.on("interactionCreate", async (interaction) => {
                     return;
                 }
 
+                const hourOpt = interaction.options.getInteger("gio");
+                const hourValue = (hourOpt !== null && hourOpt !== undefined) ? hourOpt : 8;
+
                 const schedule = loadSchedule();
                 schedule.day = dayValue;
+                schedule.hour = hourValue;
                 schedule.channelId = interaction.channelId;
                 schedule.lastRunDate = null;
                 saveSchedule(schedule);
 
-                console.log(`[Auto-Schedule] Đã lên lịch: ${DAY_NAMES[dayValue]}, kênh: ${interaction.channelId}`);
+                const hourStr = `${String(hourValue).padStart(2, "0")}:00`;
+                console.log(`[Auto-Schedule] Đã lên lịch: ${DAY_NAMES[dayValue]} lúc ${hourStr}, kênh: ${interaction.channelId}`);
 
                 const embed = new EmbedBuilder()
                     .setColor(0x23A55A)
                     .setTitle("Auto-Schedule Đã Thiết Lập")
                     .setDescription(
                         `Bot sẽ tự động cày ọp cho **tất cả tài khoản whitelist** vào:\n\n` +
-                        `• **${DAY_NAMES[dayValue]}** hàng tuần (từ ~8:00 sáng)\n` +
+                        `• **${DAY_NAMES[dayValue]}** hàng tuần (từ ~${hourStr})\n` +
                         `• **Kênh:** <#${interaction.channelId}>\n\n` +
                         `Kết quả sẽ được gửi vào kênh này.\n` +
                         `Dùng \`/autoschedule\` → **Tắt lịch** để hủy.`
