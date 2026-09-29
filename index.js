@@ -31,6 +31,7 @@ const {
     TextInputBuilder,
     TextInputStyle,
     AttachmentBuilder,
+    PermissionFlagsBits,
     Events
 } = require("discord.js");
 
@@ -56,6 +57,14 @@ const WHITELIST_PATH = path.join(__dirname, "whitelist.json");
 const SCHEDULE_PATH = path.join(__dirname, "schedule.json");
 const AVATAR_PATH = path.join(__dirname, "ivyseal_avatar.gif");
 
+const {
+    getOrCreateEncryptionKey,
+    encryptToken,
+    decryptToken
+} = require("./crypto-util.js");
+
+const ENCRYPTION_KEY = getOrCreateEncryptionKey(CONFIG_PATH);
+
 let config = {};
 try { config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); }
 catch (_) { config = { botToken: "", clientId: "", guildId: "" }; }
@@ -79,8 +88,39 @@ function saveSchedule(data) {
     fs.writeFileSync(SCHEDULE_PATH, JSON.stringify(data, null, 2), "utf8");
 }
 
-// Track tài khoản đang được xử lý (chống trùng)
-const activeSessions = new Set();
+function getDecryptedToken(entry) {
+    if (!entry || !entry.token) return "";
+    return decryptToken(entry.token, ENCRYPTION_KEY);
+}
+
+function migrateExistingTokens() {
+    const list = loadWhitelist();
+    let updated = false;
+    for (const [id, item] of Object.entries(list)) {
+        if (item.token && !String(item.token).startsWith("enc:v1:")) {
+            item.token = encryptToken(item.token, ENCRYPTION_KEY);
+            updated = true;
+        }
+    }
+    if (updated) {
+        saveWhitelist(list);
+        console.log("[Crypto] Đã mã hóa toàn bộ token hiện có trong whitelist sang AES-256-GCM.");
+    }
+}
+
+async function validateTokenHealth(token) {
+    try {
+        const userInfo = await fetchUserInfo(token);
+        return { ok: true, userInfo };
+    } catch (err) {
+        const status = err.status || err.code;
+        const isDead = status === 401 || status === 40001 || /unauthorized|401/i.test(err.message);
+        return { ok: false, dead: isDead, error: err.message };
+    }
+}
+
+// Map quản lý phiên đang cày: targetUserId -> { type: 'manual' | 'auto', username, startedAt }
+const activeSessions = new Map();
 
 // ============================================================================
 // CLIENT & UTILITIES
@@ -148,11 +188,24 @@ const commands = [
         .setName("whitelist")
         .setDescription("Thêm tài khoản vào whitelist (nhập token an toàn qua popup)"),
     new SlashCommandBuilder()
+        .setName("unwhitelist")
+        .setDescription("Xóa tài khoản khỏi danh sách whitelist")
+        .addUserOption(opt =>
+            opt.setName("user")
+                .setDescription("Người dùng Discord muốn xóa (để trống nếu muốn xóa chính mình)")
+                .setRequired(false)
+        ),
+    new SlashCommandBuilder()
+        .setName("quests")
+        .setDescription("Xem danh sách nhiệm vụ Discord và số Orb có thể cày"),
+    new SlashCommandBuilder()
         .setName("whitelisted")
-        .setDescription("Xem danh sách tài khoản đã được whitelist"),
+        .setDescription("Xem danh sách tài khoản đã được whitelist (Chỉ Quản trị viên)")
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName("autoschedule")
-        .setDescription("Lên lịch tự động cày ọp hàng tuần cho tất cả tài khoản")
+        .setDescription("Lên lịch tự động cày ọp hàng tuần cho tất cả tài khoản (Chỉ Quản trị viên)")
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption(opt =>
             opt.setName("ngay")
                 .setDescription("Chọn thứ trong tuần để chạy tự động")
@@ -194,16 +247,126 @@ async function registerCommands(token, clientId, guildId) {
 }
 
 // ============================================================================
-// EMBEDS
+// EMBEDS & HELPERS
 // ============================================================================
+async function showUserQuests(interaction, callerId) {
+    const whitelist = loadWhitelist();
+    let entry = whitelist[callerId];
+    let targetUserId = callerId;
+    if (!entry) {
+        const found = Object.entries(whitelist).find(([id, data]) => data.addedBy === callerId);
+        if (found) {
+            targetUserId = found[0];
+            entry = found[1];
+        }
+    }
+
+    if (!entry) {
+        try {
+            await interaction.reply({
+                content: "Bạn chưa được whitelist!\n> Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản.",
+                flags: 64
+            });
+        } catch (_) {}
+        return;
+    }
+
+    try {
+        await interaction.deferReply({ flags: 64 });
+    } catch (err) {
+        if (err.code === 10062 || err.code === 40060) return;
+        return;
+    }
+
+    const token = getDecryptedToken(entry);
+    const username = entry.globalName || entry.username;
+
+    const health = await validateTokenHealth(token);
+    if (!health.ok && health.dead) {
+        try {
+            await interaction.editReply({
+                content: `Token của tài khoản **${username}** đã hết hạn hoặc không hợp lệ. Vui lòng dùng lệnh \`/whitelist\` để cập nhật lại token!`
+            });
+        } catch (_) {}
+        return;
+    }
+
+    try {
+        const quests = await fetchUserQuests(token);
+        if (!quests || quests.length === 0) {
+            await interaction.editReply({
+                content: `Tài khoản **${username}** hiện không có nhiệm vụ Discord nào khả dụng.`
+            });
+            return;
+        }
+
+        let totalAvailableOrbs = 0;
+        let totalNitroOrbs = 0;
+        const questLines = [];
+
+        for (let i = 0; i < quests.length; i++) {
+            const q = quests[i];
+            const name = getQuestName(q);
+            const task = detectQuestTask(q);
+            const orbs = getQuestOrbs(q, false);
+            const nitroOrbs = getQuestOrbs(q, true);
+            const isExpired = isQuestExpired(q);
+            const userStatus = q.user_status;
+
+            let statusStr = "";
+            if (userStatus?.claimed_at) {
+                statusStr = "Đã nhận thưởng";
+            } else if (userStatus?.completed_at) {
+                statusStr = "Đã xong (chưa nhận thưởng)";
+                totalAvailableOrbs += orbs;
+                totalNitroOrbs += nitroOrbs;
+            } else if (isExpired) {
+                statusStr = "Đã hết hạn";
+            } else {
+                const curSec = userStatus?.progress?.[task.keyName]?.value || 0;
+                const targetSec = task.target || 900;
+                const percent = Math.min(100, Math.floor((curSec / targetSec) * 100));
+                statusStr = percent > 0 ? `Đang làm (${percent}%)` : "Chưa làm";
+                totalAvailableOrbs += orbs;
+                totalNitroOrbs += nitroOrbs;
+            }
+
+            const typeLabel = task.type === "WATCH_VIDEO" ? "Video" : (task.type === "STREAM" ? "Stream" : "Game");
+            questLines.push(`**${i + 1}. ${name}** [${typeLabel}]\n> Trạng thái: ${statusStr} • Thưởng: **${orbs}** Orbs (${nitroOrbs} với Nitro)`);
+        }
+
+        const embed = new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle(`Danh Sách Quest — ${username}`)
+            .setDescription(
+                `• **Tổng số nhiệm vụ:** ${quests.length}\n` +
+                `• **Tổng Orb có thể cày/nhận:** **${totalAvailableOrbs.toLocaleString()}** Orbs (${totalNitroOrbs.toLocaleString()} với Nitro)\n\n` +
+                questLines.slice(0, 15).join("\n\n")
+            )
+            .setFooter({ text: `Ivy Ọp • Dùng nút Cày Ọp để tự động hoàn thành và nhận thưởng` })
+            .setTimestamp();
+
+        if (entry.avatarUrl) {
+            embed.setThumbnail(entry.avatarUrl);
+        }
+
+        await interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+        console.error("[Quests] Lỗi lấy danh sách quest:", err);
+        await interaction.editReply({
+            content: `Không thể tải danh sách quest cho **${username}**: ${err.message}`
+        });
+    }
+}
+
 function createSpawnEmbed() {
     const embed = new EmbedBuilder()
         .setColor(0x2b2d31)
         .setTitle("Dịch Vụ Tự Động Cày Ọp")
         .setDescription(
             `Tự động hoàn thành quest Discord, nhận Orb để đổi decor\n\n` +
-            `> Sử dụng \`/whitelist\` để đăng ký tài khoản trước khi bấm **Cày Ọp**\n\n` +
-            `**Lưu ý:** Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn.`
+            `> **Lưu ý:** Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản trước khi bấm **Cày Ọp**!\n\n` +
+            `**Cảnh báo:** Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn.`
         )
         .setThumbnail("attachment://ivyseal_avatar.gif")
         .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
@@ -213,6 +376,10 @@ function createSpawnEmbed() {
             .setCustomId("ivyseal_btn_cay_op")
             .setLabel("Cày Ọp")
             .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+            .setCustomId("ivyseal_btn_view_quests")
+            .setLabel("Xem Danh Sách Quest")
+            .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
             .setCustomId("ivyseal_btn_guide")
             .setLabel("Hướng dẫn lấy token")
@@ -247,7 +414,7 @@ function buildStatusEmbed(username, activeQuests, totalTimeSec, currentQuest = n
         const p = Math.min(100, Math.max(0, currentQuest.percent || 0));
         const bar = createProgressBar(p);
         const statusNote = currentQuest.status === "skipped"
-            ? `\n> ⚠️ *Đã thử vài lần nhưng không tăng tiến trình. Đang bỏ qua để sang nhiệm vụ tiếp...*`
+            ? `\n> *Đã thử vài lần nhưng không tăng tiến trình. Đang bỏ qua để sang nhiệm vụ tiếp...*`
             : "";
 
         desc += `\n━━━━━━━━━━━━━━━━━━━━\n` +
@@ -385,7 +552,8 @@ async function runAllWhitelistedQuests(channel) {
         return;
     }
 
-    console.log(`[Auto-Schedule] Bắt đầu chạy cho ${entries.length} tài khoản...`);
+    const concurrency = Math.max(1, Math.min(5, config.maxConcurrentQuests || 2));
+    console.log(`[Auto-Schedule] Bắt đầu chạy cho ${entries.length} tài khoản (Song song: ${concurrency} luồng)...`);
 
     const attachment = fs.existsSync(AVATAR_PATH)
         ? new AttachmentBuilder(AVATAR_PATH, { name: "ivyseal_avatar.gif" })
@@ -394,7 +562,7 @@ async function runAllWhitelistedQuests(channel) {
     const startEmbed = new EmbedBuilder()
         .setColor(0x5865F2)
         .setTitle("Auto-Schedule: Tự Động Cày Ọp")
-        .setDescription(`Đang xử lý **${entries.length}** tài khoản whitelist...`)
+        .setDescription(`Đang xử lý **${entries.length}** tài khoản whitelist (tối đa **${concurrency}** tài khoản chạy cùng lúc)...`)
         .setThumbnail(attachment ? "attachment://ivyseal_avatar.gif" : null)
         .setTimestamp();
 
@@ -402,32 +570,91 @@ async function runAllWhitelistedQuests(channel) {
     if (attachment) msgPayload.files = [attachment];
     const msg = await channel.send(msgPayload);
 
+    const queue = [...entries];
     const allResults = [];
-    for (let i = 0; i < entries.length; i++) {
-        const [userId, entry] = entries[i];
-        console.log(`[Auto-Schedule] [${i + 1}/${entries.length}] Đang xử lý: ${entry.username} (${userId})`);
 
-        const result = await runQuestsForUser(entry.token, null);
-        allResults.push({ username: entry.username, userId, ...result });
+    async function processAccount(userId, entry) {
+        const username = entry.globalName || entry.username;
 
-        // Delay giữa các tài khoản
-        if (i < entries.length - 1) await randomDelay(10000, 30000);
+        if (activeSessions.has(userId)) {
+            const existing = activeSessions.get(userId);
+            console.log(`[Auto-Schedule] Bỏ qua ${username} (${userId}) vì đang có phiên (${existing.type}).`);
+            allResults.push({
+                username,
+                userId,
+                error: `Đang có phiên ${existing.type === "manual" ? "thủ công" : "khác"} đang chạy, bỏ qua để tránh rate limit.`
+            });
+            return;
+        }
+
+        const token = getDecryptedToken(entry);
+        if (!token) {
+            allResults.push({ username, userId, error: "Không thể giải mã token." });
+            return;
+        }
+
+        const health = await validateTokenHealth(token);
+        if (!health.ok && health.dead) {
+            console.warn(`[Auto-Schedule] Token của ${username} đã hết hạn hoặc không hợp lệ.`);
+            allResults.push({ username, userId, error: "Token đã hết hạn hoặc không hợp lệ (cần /whitelist lại)." });
+            return;
+        }
+
+        activeSessions.set(userId, {
+            type: "auto",
+            username,
+            startedAt: Date.now()
+        });
+
+        try {
+            console.log(`[Auto-Schedule] Đang xử lý: ${username} (${userId})`);
+            const result = await runQuestsForUser(token, null);
+            allResults.push({ username, userId, ...result });
+        } catch (err) {
+            allResults.push({ username, userId, error: err.message });
+        } finally {
+            activeSessions.delete(userId);
+        }
     }
+
+    async function worker(workerId) {
+        if (workerId > 0) {
+            await new Promise(r => setTimeout(r, workerId * 5000));
+        }
+
+        while (queue.length > 0) {
+            const item = queue.shift();
+            if (!item) break;
+            const [userId, entry] = item;
+            await processAccount(userId, entry);
+            if (queue.length > 0) {
+                await randomDelay(5000, 15000);
+            }
+        }
+    }
+
+    const workers = [];
+    for (let w = 0; w < Math.min(concurrency, entries.length); w++) {
+        workers.push(worker(w));
+    }
+    await Promise.all(workers);
 
     // Tổng kết
     const lines = allResults.map(r => {
         if (r.error) return `• **${r.username}** — ${r.error}`;
-        const ok = r.results.filter(x => x.success).length;
-        const skipped = r.results.filter(x => x.skipped || x.requiresPlayer).length;
+        const ok = r.results ? r.results.filter(x => x.success).length : 0;
+        const total = r.results ? r.results.length : 0;
+        const skipped = r.results ? r.results.filter(x => x.skipped || x.requiresPlayer).length : 0;
         const skipText = skipped > 0 ? ` (bỏ qua ${skipped} cần tự làm)` : "";
-        return `• **${r.username}** — ${ok}/${r.results.length} nhiệm vụ hoàn thành${skipText}`;
+        return `• **${r.username}** — ${ok}/${total} nhiệm vụ hoàn thành${skipText}`;
     });
 
     const finalEmbed = new EmbedBuilder()
         .setColor(0x23A55A)
         .setTitle("Auto-Schedule: Hoàn Thành")
         .setDescription(lines.join("\n") || "Không có kết quả.")
-        .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
+        .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` })
+        .setTimestamp();
 
     await msg.edit({ embeds: [finalEmbed] });
     console.log(`[Auto-Schedule] Hoàn thành xử lý ${entries.length} tài khoản.`);
@@ -473,6 +700,8 @@ client.once(Events.ClientReady, async () => {
     console.log(`[Bot] Đã đăng nhập: ${client.user.tag} (ID: ${client.user.id})`);
     console.log(`[Bot] Link mời: https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot%20applications.commands`);
     console.log(`======================================================\n`);
+
+    migrateExistingTokens();
 
     if (config.botToken && config.clientId) {
         await registerCommands(config.botToken, config.clientId, config.guildId);
@@ -531,8 +760,25 @@ client.on("interactionCreate", async (interaction) => {
                 return;
             }
 
+            // --- /quests ---
+            if (interaction.commandName === "quests") {
+                await showUserQuests(interaction, interaction.user.id);
+                return;
+            }
+
             // --- /whitelisted ---
             if (interaction.commandName === "whitelisted") {
+                const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+                if (!isAdmin) {
+                    try {
+                        await interaction.reply({
+                            content: "Bạn cần có quyền Quản trị viên (Administrator) để xem danh sách whitelist.",
+                            flags: 64
+                        });
+                    } catch (_) {}
+                    return;
+                }
+
                 const whitelist = loadWhitelist();
                 const entries = Object.entries(whitelist);
 
@@ -567,8 +813,98 @@ client.on("interactionCreate", async (interaction) => {
                 return;
             }
 
+            // --- /unwhitelist [user] ---
+            if (interaction.commandName === "unwhitelist") {
+                const targetUser = interaction.options.getUser("user");
+                const callerId = interaction.user.id;
+                const isAdmin = interaction.memberPermissions?.has("Administrator") || interaction.memberPermissions?.has("ManageGuild");
+
+                const whitelist = loadWhitelist();
+                let targetIdToRemove = null;
+                let targetEntry = null;
+
+                if (targetUser) {
+                    const found = whitelist[targetUser.id];
+                    if (!found) {
+                        const byAdded = Object.entries(whitelist).find(([_, data]) => data.addedBy === targetUser.id);
+                        if (byAdded) {
+                            targetIdToRemove = byAdded[0];
+                            targetEntry = byAdded[1];
+                        }
+                    } else {
+                        targetIdToRemove = targetUser.id;
+                        targetEntry = found;
+                    }
+
+                    if (!isAdmin && targetEntry && targetEntry.addedBy !== callerId && targetIdToRemove !== callerId) {
+                        await interaction.reply({
+                            content: "Bạn không có quyền xóa tài khoản của người khác (yêu cầu quyền Quản trị viên).",
+                            flags: 64
+                        });
+                        return;
+                    }
+                } else {
+                    if (whitelist[callerId]) {
+                        targetIdToRemove = callerId;
+                        targetEntry = whitelist[callerId];
+                    } else {
+                        const byAdded = Object.entries(whitelist).find(([_, data]) => data.addedBy === callerId);
+                        if (byAdded) {
+                            targetIdToRemove = byAdded[0];
+                            targetEntry = byAdded[1];
+                        }
+                    }
+                }
+
+                if (!targetIdToRemove || !targetEntry) {
+                    await interaction.reply({
+                        content: "Không tìm thấy tài khoản tương ứng trong danh sách whitelist.",
+                        flags: 64
+                    });
+                    return;
+                }
+
+                if (activeSessions.has(targetIdToRemove)) {
+                    await interaction.reply({
+                        content: `Tài khoản **${targetEntry.username}** đang trong phiên cày ọp. Vui lòng đợi phiên cày hoàn thành trước khi xóa!`,
+                        flags: 64
+                    });
+                    return;
+                }
+
+                delete whitelist[targetIdToRemove];
+                saveWhitelist(whitelist);
+
+                console.log(`[Whitelist] Đã xóa: ${targetEntry.username} (${targetIdToRemove}) bởi ${interaction.user.tag}`);
+
+                const embed = new EmbedBuilder()
+                    .setColor(0xED4245)
+                    .setTitle("Đã Xóa Khỏi Whitelist")
+                    .setDescription(
+                        `• **Tài khoản:** ${targetEntry.username}\n` +
+                        `• **ID:** \`${targetIdToRemove}\`\n` +
+                        `• **Người thực hiện:** <@${callerId}>\n\n` +
+                        `Tài khoản này đã được xóa khỏi hệ thống cày ọp.`
+                    )
+                    .setTimestamp();
+
+                await interaction.reply({ embeds: [embed], flags: 64 });
+                return;
+            }
+
             // --- /autoschedule <ngay> ---
             if (interaction.commandName === "autoschedule") {
+                const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+                if (!isAdmin) {
+                    try {
+                        await interaction.reply({
+                            content: "Bạn cần có quyền Quản trị viên (Administrator) để thiết lập lịch cày tự động.",
+                            flags: 64
+                        });
+                    } catch (_) {}
+                    return;
+                }
+
                 const dayValue = parseInt(interaction.options.getString("ngay"));
 
                 // Tắt lịch
@@ -640,7 +976,7 @@ client.on("interactionCreate", async (interaction) => {
                 const isUpdate = !!whitelist[userId];
 
                 whitelist[userId] = {
-                    token: token.trim().replace(/^["']|["']$/g, ""),
+                    token: encryptToken(token, ENCRYPTION_KEY),
                     username: displayTag,
                     globalName: username,
                     avatarUrl: userInfo.avatar
@@ -700,17 +1036,21 @@ client.on("interactionCreate", async (interaction) => {
             if (!entry) {
                 try {
                     await interaction.reply({
-                        content: "Bạn chưa được whitelist!\n> Sử dụng `/whitelist` để đăng ký tài khoản trước.",
+                        content: "Bạn chưa được whitelist!\n> Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản.",
                         flags: 64
                     });
                 } catch (_) {}
                 return;
             }
 
-            if (activeSessions.has(targetUserId)) {
+            const currentSession = activeSessions.get(targetUserId);
+            if (currentSession) {
+                const msg = currentSession.type === "auto"
+                    ? "Tài khoản này đang được hệ thống **Auto-Schedule** tự động cày!\nVui lòng không bấm cày lại để tránh bị Discord giới hạn (rate limit)."
+                    : "Tài khoản này đang trong một phiên cày khác. Vui lòng đợi hoàn thành!";
                 try {
                     await interaction.reply({
-                        content: "Tài khoản này đang được xử lý. Vui lòng đợi hoàn thành!",
+                        content: msg,
                         flags: 64
                     });
                 } catch (_) {}
@@ -724,9 +1064,25 @@ client.on("interactionCreate", async (interaction) => {
                 return;
             }
 
-            activeSessions.add(targetUserId);
-            const token = entry.token;
+            const token = getDecryptedToken(entry);
             const username = entry.globalName || entry.username;
+
+            const health = await validateTokenHealth(token);
+            if (!health.ok && health.dead) {
+                try {
+                    await interaction.editReply({
+                        content: `Token của tài khoản **${username}** đã hết hạn hoặc không hợp lệ. Vui lòng dùng lệnh \`/whitelist\` để cập nhật lại token!`
+                    });
+                } catch (_) {}
+                return;
+            }
+
+            activeSessions.set(targetUserId, {
+                type: "manual",
+                username,
+                startedAt: Date.now()
+            });
+
             let lastUpdateTime = 0;
             const startTime = Date.now();
 
@@ -849,7 +1205,7 @@ client.on("interactionCreate", async (interaction) => {
 
                     if (skippedQuests.length > 0) {
                         desc += `• **Bỏ qua (cần tự vào game) :** ${skippedQuests.length} nhiệm vụ\n` +
-                                `> 🎮 *${skippedQuests.map(q => q.questName).join(", ")}*\n`;
+                                `> *${skippedQuests.map(q => q.questName).join(", ")}*\n`;
                     }
                     if (failQuests.length > 0) {
                         desc += `• **Thất bại :** ${failQuests.length} nhiệm vụ\n`;
@@ -883,6 +1239,12 @@ client.on("interactionCreate", async (interaction) => {
             } finally {
                 activeSessions.delete(targetUserId);
             }
+            return;
+        }
+
+        // --- Xem Danh Sách Quest ---
+        if (interaction.isButton() && interaction.customId === "ivyseal_btn_view_quests") {
+            await showUserQuests(interaction, interaction.user.id);
             return;
         }
 
