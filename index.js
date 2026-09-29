@@ -55,7 +55,7 @@ const {
 const CONFIG_PATH = path.join(__dirname, "config.json");
 const WHITELIST_PATH = path.join(__dirname, "whitelist.json");
 const SCHEDULE_PATH = path.join(__dirname, "schedule.json");
-const AVATAR_PATH = path.join(__dirname, "ivyseal_avatar.gif");
+const BANNER_PATH = path.join(__dirname, "banner.png");
 
 const {
     getOrCreateEncryptionKey,
@@ -375,7 +375,7 @@ function createSpawnEmbed() {
             `> **Lưu ý:** Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản trước khi bấm **Cày Ọp**!\n\n` +
             `**Cảnh báo:** Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn.`
         )
-        .setThumbnail("attachment://ivyseal_avatar.gif")
+        .setImage("attachment://banner.png")
         .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
 
     const buttons = new ActionRowBuilder().addComponents(
@@ -440,7 +440,7 @@ function buildStatusEmbed(username, activeQuests, totalTimeSec, currentQuest = n
     const embed = new EmbedBuilder()
         .setColor(0x5865F2)
         .setTitle("Tự Động Cày Ọp")
-        .setThumbnail("attachment://ivyseal_avatar.gif")
+        .setImage("attachment://banner.png")
         .setDescription(desc)
         .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
 
@@ -562,15 +562,15 @@ async function runAllWhitelistedQuests(channel) {
     const concurrency = Math.max(1, Math.min(5, config.maxConcurrentQuests || 2));
     console.log(`[Auto-Schedule] Bắt đầu chạy cho ${entries.length} tài khoản (Song song: ${concurrency} luồng)...`);
 
-    const attachment = fs.existsSync(AVATAR_PATH)
-        ? new AttachmentBuilder(AVATAR_PATH, { name: "ivyseal_avatar.gif" })
+    const attachment = fs.existsSync(BANNER_PATH)
+        ? new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })
         : null;
 
     const startEmbed = new EmbedBuilder()
         .setColor(0x5865F2)
         .setTitle("Auto-Schedule: Tự Động Cày Ọp")
         .setDescription(`Đang xử lý **${entries.length}** tài khoản whitelist (tối đa **${concurrency}** tài khoản chạy cùng lúc)...`)
-        .setThumbnail(attachment ? "attachment://ivyseal_avatar.gif" : null)
+        .setImage(attachment ? "attachment://banner.png" : null)
         .setTimestamp();
 
     const msgPayload = { embeds: [startEmbed] };
@@ -735,8 +735,8 @@ client.on("interactionCreate", async (interaction) => {
             // --- /dqcspawn ---
             if (interaction.commandName === "dqcspawn") {
                 const payload = createSpawnEmbed();
-                if (fs.existsSync(AVATAR_PATH)) {
-                    payload.files = [new AttachmentBuilder(AVATAR_PATH, { name: "ivyseal_avatar.gif" })];
+                if (fs.existsSync(BANNER_PATH)) {
+                    payload.files = [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })];
                 }
                 try {
                     await interaction.reply(payload);
@@ -1105,13 +1105,13 @@ client.on("interactionCreate", async (interaction) => {
             // Gửi tin nhắn khởi tạo vào Direct Message (DM) để khi người dùng F5/reload không bị mất
             let dmMessage = null;
             try {
-                const initialFiles = fs.existsSync(AVATAR_PATH)
-                    ? [new AttachmentBuilder(AVATAR_PATH, { name: "ivyseal_avatar.gif" })]
+                const initialFiles = fs.existsSync(BANNER_PATH)
+                    ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
                     : [];
                 const initialEmbed = new EmbedBuilder()
                     .setColor(0x5865F2)
                     .setTitle("Tự Động Cày Ọp — Tiến Trình Riêng")
-                    .setThumbnail("attachment://ivyseal_avatar.gif")
+                    .setImage("attachment://banner.png")
                     .setDescription(`Đang khởi tạo danh sách nhiệm vụ cho tài khoản **${username}**...`)
                     .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
                 dmMessage = await interaction.user.send({ embeds: [initialEmbed], files: initialFiles });
@@ -1158,8 +1158,8 @@ client.on("interactionCreate", async (interaction) => {
                             cachedIsPremium,
                             cachedFinishTimestamp
                         );
-                        const files = fs.existsSync(AVATAR_PATH)
-                            ? [new AttachmentBuilder(AVATAR_PATH, { name: "ivyseal_avatar.gif" })]
+                        const files = fs.existsSync(BANNER_PATH)
+                            ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
                             : [];
                         await updateBoth({ embeds: [embed], files });
                     }
@@ -1230,12 +1230,12 @@ client.on("interactionCreate", async (interaction) => {
                     const finalEmbed = new EmbedBuilder()
                         .setColor(0x23A55A)
                         .setTitle("Tự Động Cày Ọp — Hoàn Thành")
-                        .setThumbnail("attachment://ivyseal_avatar.gif")
+                        .setImage("attachment://banner.png")
                         .setDescription(desc)
                         .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
 
-                    const files = fs.existsSync(AVATAR_PATH)
-                        ? [new AttachmentBuilder(AVATAR_PATH, { name: "ivyseal_avatar.gif" })]
+                    const files = fs.existsSync(BANNER_PATH)
+                        ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
                         : [];
 
                     await updateBoth({ embeds: [finalEmbed], files });
