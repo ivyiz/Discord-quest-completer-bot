@@ -14,6 +14,8 @@
  * ============================================================================
  */
 
+process.env.TZ = "Asia/Ho_Chi_Minh";
+
 // Logger — phải require ĐẦU TIÊN để patch console
 require("./logger.js");
 
@@ -163,11 +165,12 @@ function formatTime(seconds) {
     return `${s}s`;
 }
 
-function getOnTimestamp() {
-    const d = new Date();
-    const h = String(d.getHours()).padStart(2, "0");
-    const m = String(d.getMinutes()).padStart(2, "0");
-    return `${h}:${m}`;
+function getOnTimestamp(d = new Date()) {
+    return d.toLocaleTimeString("en-GB", {
+        timeZone: "Asia/Ho_Chi_Minh",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
 }
 
 let botOnlineTime = getOnTimestamp();
@@ -376,7 +379,7 @@ function createSpawnEmbed() {
             `**Cảnh báo:** Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn.`
         )
         .setImage("attachment://banner.png")
-        .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
+        .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` });
 
     const buttons = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -442,7 +445,7 @@ function buildStatusEmbed(username, activeQuests, totalTimeSec, currentQuest = n
         .setTitle("Tự Động Cày Ọp")
         .setImage("attachment://banner.png")
         .setDescription(desc)
-        .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
+        .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` });
 
     return embed;
 }
@@ -660,7 +663,7 @@ async function runAllWhitelistedQuests(channel) {
         .setColor(0x23A55A)
         .setTitle("Auto-Schedule: Hoàn Thành")
         .setDescription(lines.join("\n") || "Không có kết quả.")
-        .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` })
+        .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` })
         .setTimestamp();
 
     await msg.edit({ embeds: [finalEmbed] });
@@ -674,13 +677,13 @@ function startScheduleChecker() {
             const schedule = loadSchedule();
             if (schedule.day === null || schedule.day === undefined || schedule.day < 0 || !schedule.channelId) return;
 
-            const now = new Date();
-            const currentDay = now.getDay();
-            const todayDate = now.toISOString().split("T")[0];
+            const nowVn = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }));
+            const currentDay = nowVn.getDay();
+            const todayDate = nowVn.toISOString().split("T")[0];
 
             // Chạy nếu đúng ngày, chưa chạy hôm nay, và từ giờ đã đặt trở đi
             const targetHour = (schedule.hour !== undefined && schedule.hour !== null) ? schedule.hour : 8;
-            if (currentDay === schedule.day && schedule.lastRunDate !== todayDate && now.getHours() >= targetHour) {
+            if (currentDay === schedule.day && schedule.lastRunDate !== todayDate && nowVn.getHours() >= targetHour) {
                 schedule.lastRunDate = todayDate;
                 saveSchedule(schedule);
 
@@ -1113,7 +1116,7 @@ client.on("interactionCreate", async (interaction) => {
                     .setTitle("Tự Động Cày Ọp — Tiến Trình Riêng")
                     .setImage("attachment://banner.png")
                     .setDescription(`Đang khởi tạo danh sách nhiệm vụ cho tài khoản **${username}**...`)
-                    .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
+                    .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` });
                 dmMessage = await interaction.user.send({ embeds: [initialEmbed], files: initialFiles });
                 console.log(`[Cày Ọp] Đã mở DM theo dõi cho người dùng: ${interaction.user.tag}`);
             } catch (err) {
@@ -1232,7 +1235,7 @@ client.on("interactionCreate", async (interaction) => {
                         .setTitle("Tự Động Cày Ọp — Hoàn Thành")
                         .setImage("attachment://banner.png")
                         .setDescription(desc)
-                        .setFooter({ text: `Ivy Ọp • On lúc ${botOnlineTime}` });
+                        .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` });
 
                     const files = fs.existsSync(BANNER_PATH)
                         ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
