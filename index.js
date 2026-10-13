@@ -26,6 +26,11 @@ const {
     REST,
     Routes,
     EmbedBuilder,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    SeparatorBuilder,
+    MediaGalleryBuilder,
+    MediaGalleryItemBuilder,
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
@@ -34,7 +39,9 @@ const {
     TextInputStyle,
     AttachmentBuilder,
     PermissionFlagsBits,
-    Events
+    Events,
+    ActivityType,
+    MessageFlags
 } = require("discord.js");
 
 const fs = require("fs");
@@ -74,6 +81,7 @@ catch (_) { config = { botToken: "", clientId: "", guildId: "" }; }
 if (process.env.BOT_TOKEN)  config.botToken = process.env.BOT_TOKEN;
 if (process.env.CLIENT_ID)  config.clientId  = process.env.CLIENT_ID;
 if (process.env.GUILD_ID)   config.guildId   = process.env.GUILD_ID;
+
 
 function loadWhitelist() {
     try { return JSON.parse(fs.readFileSync(WHITELIST_PATH, "utf8")); }
@@ -189,7 +197,8 @@ const commands = [
         .setDescription("Triệu hồi bảng điều khiển Tự Động Cày Ọp"),
     new SlashCommandBuilder()
         .setName("whitelist")
-        .setDescription("Thêm tài khoản vào whitelist (nhập token an toàn qua popup)"),
+        .setDescription("Thêm tài khoản vào whitelist (nhập token an toàn qua popup)")
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName("unwhitelist")
         .setDescription("Xóa tài khoản khỏi danh sách whitelist")
@@ -353,7 +362,6 @@ async function showUserQuests(interaction, callerId) {
                 `• **Tổng Orb có thể cày/nhận:** **${totalAvailableOrbs.toLocaleString()}** Orbs (${totalNitroOrbs.toLocaleString()} với Nitro)\n\n` +
                 questLines.slice(0, 15).join("\n\n")
             )
-            .setFooter({ text: `Ivy Ọp • Dùng nút Cày Ọp để tự động hoàn thành và nhận thưởng` })
             .setTimestamp();
 
         if (entry.avatarUrl) {
@@ -369,17 +377,35 @@ async function showUserQuests(interaction, callerId) {
     }
 }
 
-function createSpawnEmbed() {
-    const embed = new EmbedBuilder()
-        .setColor(0x2b2d31)
-        .setTitle("Dịch Vụ Tự Động Cày Ọp")
-        .setDescription(
-            `Tự động hoàn thành quest Discord, nhận Orb để đổi decor\n\n` +
-            `> **Lưu ý:** Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản trước khi bấm **Cày Ọp**!\n\n` +
-            `**Cảnh báo:** Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn.`
+function createSpawnPayload() {
+    const container = new ContainerBuilder()
+        .setAccentColor(0x2b2d31);
+
+    container.addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+            "# Dịch Vụ Tự Động Cày Ọp\n" +
+            "Tự động hoàn thành quest Discord, nhận Orb để đổi decor"
         )
-        .setImage("attachment://banner.png")
-        .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` });
+    );
+
+    const files = [];
+    if (fs.existsSync(BANNER_PATH)) {
+        files.push(new AttachmentBuilder(BANNER_PATH, { name: "banner.png" }));
+        container.addMediaGalleryComponents(
+            new MediaGalleryBuilder().addItems(
+                new MediaGalleryItemBuilder().setURL("attachment://banner.png")
+            )
+        );
+    }
+
+    container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
+
+    container.addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+            "> **Lưu ý:** Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản trước khi bấm **Cày Ọp**!\n\n" +
+            "**Cảnh báo:** Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn."
+        )
+    );
 
     const buttons = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -396,8 +422,16 @@ function createSpawnEmbed() {
             .setStyle(ButtonStyle.Secondary)
     );
 
-    return { embeds: [embed], components: [buttons] };
+    container.addActionRowComponents(buttons);
+
+    return {
+        components: [container],
+        flags: MessageFlags.IsComponentsV2,
+        files
+    };
 }
+
+const createSpawnEmbed = createSpawnPayload;
 
 function buildStatusEmbed(username, activeQuests, totalTimeSec, currentQuest = null, isPremium = false, finishTimestamp = null) {
     let totalOrbsBase = 0;
@@ -444,8 +478,7 @@ function buildStatusEmbed(username, activeQuests, totalTimeSec, currentQuest = n
         .setColor(0x5865F2)
         .setTitle("Tự Động Cày Ọp")
         .setImage("attachment://banner.png")
-        .setDescription(desc)
-        .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` });
+        .setDescription(desc);
 
     return embed;
 }
@@ -663,7 +696,6 @@ async function runAllWhitelistedQuests(channel) {
         .setColor(0x23A55A)
         .setTitle("Auto-Schedule: Hoàn Thành")
         .setDescription(lines.join("\n") || "Không có kết quả.")
-        .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` })
         .setTimestamp();
 
     await msg.edit({ embeds: [finalEmbed] });
@@ -706,6 +738,15 @@ function startScheduleChecker() {
 // XỬ LÝ TƯƠNG TÁC
 // ============================================================================
 client.once(Events.ClientReady, async () => {
+    client.user.setPresence({
+        activities: [{
+            name: "Ivy Services | Auto Quests",
+            type: ActivityType.Streaming,
+            url: "https://www.twitch.tv/discord"
+        }],
+        status: "online"
+    });
+
     botOnlineTime = getOnTimestamp();
     console.log(`\n======================================================`);
     console.log(`[Bot] Đã đăng nhập: ${client.user.tag} (ID: ${client.user.id})`);
@@ -737,10 +778,7 @@ client.on("interactionCreate", async (interaction) => {
         if (interaction.isChatInputCommand()) {
             // --- /dqcspawn ---
             if (interaction.commandName === "dqcspawn") {
-                const payload = createSpawnEmbed();
-                if (fs.existsSync(BANNER_PATH)) {
-                    payload.files = [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })];
-                }
+                const payload = createSpawnPayload();
                 try {
                     await interaction.reply(payload);
                 } catch (err) {
@@ -814,7 +852,6 @@ client.on("interactionCreate", async (interaction) => {
                             `**${idx + 1}.** ${data.username} — \`${userId}\``
                         ).join("\n")
                     )
-                    .setFooter({ text: `Tổng: ${entries.length} tài khoản` })
                     .setTimestamp();
 
                 try {
@@ -1115,8 +1152,7 @@ client.on("interactionCreate", async (interaction) => {
                     .setColor(0x5865F2)
                     .setTitle("Tự Động Cày Ọp — Tiến Trình Riêng")
                     .setImage("attachment://banner.png")
-                    .setDescription(`Đang khởi tạo danh sách nhiệm vụ cho tài khoản **${username}**...`)
-                    .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` });
+                    .setDescription(`Đang khởi tạo danh sách nhiệm vụ cho tài khoản **${username}**...`);
                 dmMessage = await interaction.user.send({ embeds: [initialEmbed], files: initialFiles });
                 console.log(`[Cày Ọp] Đã mở DM theo dõi cho người dùng: ${interaction.user.tag}`);
             } catch (err) {
@@ -1234,8 +1270,7 @@ client.on("interactionCreate", async (interaction) => {
                         .setColor(0x23A55A)
                         .setTitle("Tự Động Cày Ọp — Hoàn Thành")
                         .setImage("attachment://banner.png")
-                        .setDescription(desc)
-                        .setFooter({ text: `Ivy Ọp • On lúc ${getOnTimestamp()}` });
+                        .setDescription(desc);
 
                     const files = fs.existsSync(BANNER_PATH)
                         ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
@@ -1267,29 +1302,34 @@ client.on("interactionCreate", async (interaction) => {
 
         // --- Hướng dẫn lấy token ---
         if (interaction.isButton() && interaction.customId === "ivyseal_btn_guide") {
-            const guideEmbed = new EmbedBuilder()
-                .setColor(0x2b2d31)
-                .setTitle("Hướng dẫn lấy token tài khoản")
-                .setDescription(
-                    `1. Mở Developer Tools (nhấn **F12**) và chuyển sang tab **Application**.\n` +
-                    `2. Ở thanh bên trái, mở rộng **Local Storage** → chọn **https://discord.com**.\n` +
-                    `3. Tại ô tìm kiếm (Filter), gõ \`token\`.\n` +
-                    `4. Token của bạn sẽ xuất hiện ở cột **Value** (bỏ dấu ngoặc kép nếu có).\n\n` +
-                    `Video hướng dẫn: https://www.youtube.com/watch?v=OUd37MWgBfs\n\n` +
-                    `**Cảnh báo bảo mật:**\n` +
-                    `Discord token hoạt động như mật khẩu. Không chia sẻ công khai hoặc dán vào trang web không tin cậy. ` +
-                    `Nếu nghi ngờ token bị lộ, hãy đổi mật khẩu ngay lập tức.`
+            const guideContainer = new ContainerBuilder()
+                .setAccentColor(0x2b2d31)
+                .addTextDisplayComponents(
+                    new TextDisplayBuilder().setContent(
+                        "# Hướng dẫn lấy token tài khoản\n\n" +
+                        "1. Mở Developer Tools (nhấn **F12**) và chuyển sang tab **Application**.\n" +
+                        "2. Ở thanh bên trái, mở rộng **Local Storage** → chọn **https://discord.com**.\n" +
+                        "3. Tại ô tìm kiếm (Filter), gõ `token`.\n" +
+                        "4. Token của bạn sẽ xuất hiện ở cột **Value** (bỏ dấu ngoặc kép nếu có).\n\n" +
+                        "Video hướng dẫn: https://www.youtube.com/watch?v=OUd37MWgBfs\n\n" +
+                        "⚠️ **Cảnh báo bảo mật:**\n" +
+                        "-# Discord token hoạt động như mật khẩu. Không chia sẻ công khai hoặc dán vào trang web không tin cậy. Nếu nghi ngờ token bị lộ, hãy đổi mật khẩu ngay lập tức."
+                    )
+                )
+                .addActionRowComponents(
+                    new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setLabel("Xem Video Hướng Dẫn")
+                            .setStyle(ButtonStyle.Link)
+                            .setURL("https://www.youtube.com/watch?v=OUd37MWgBfs")
+                    )
                 );
 
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setLabel("Xem Video Hướng Dẫn")
-                    .setStyle(ButtonStyle.Link)
-                    .setURL("https://www.youtube.com/watch?v=OUd37MWgBfs")
-            );
-
             try {
-                await interaction.reply({ embeds: [guideEmbed], components: [row], flags: 64 });
+                await interaction.reply({
+                    components: [guideContainer],
+                    flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
+                });
             } catch (err) {
                 if (err.code === 10062 || err.code === 40060) return;
             }
