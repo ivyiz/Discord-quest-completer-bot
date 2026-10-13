@@ -81,6 +81,13 @@ catch (_) { config = { botToken: "", clientId: "", guildId: "" }; }
 if (process.env.BOT_TOKEN)  config.botToken = process.env.BOT_TOKEN;
 if (process.env.CLIENT_ID)  config.clientId  = process.env.CLIENT_ID;
 if (process.env.GUILD_ID)   config.guildId   = process.env.GUILD_ID;
+if (process.env.LOG_CHANNEL_ID) config.logChannelId = process.env.LOG_CHANNEL_ID;
+
+function saveConfig(data) {
+    try {
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2), "utf8");
+    } catch (_) {}
+}
 
 
 function loadWhitelist() {
@@ -173,6 +180,49 @@ function formatTime(seconds) {
     return `${s}s`;
 }
 
+function formatLogDuration(seconds) {
+    const s = Math.max(0, Math.floor(seconds || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const remS = s % 60;
+    if (h > 0) return `${h}h ${m}m ${remS}s`;
+    return `${m}m ${remS}s`;
+}
+
+async function sendQuestLog({ user, accountName, completedCount = 0, elapsedSeconds = 0, status, isError = false, avatarUrl = null }) {
+    if (!config.logChannelId) return;
+    try {
+        const logChannel = await client.channels.fetch(config.logChannelId).catch(() => null);
+        if (!logChannel || !logChannel.isTextBased()) return;
+
+        const title = isError ? "Lỗi Tiến Trình Quest" : "Hoàn Tất Tiến Trình Quest";
+        const timeStr = formatLogDuration(elapsedSeconds);
+
+        const userId = user?.id || "0";
+        const userTag = user?.username || "Unknown";
+
+        const desc = [
+            `User: <@${userId}> (\`${userTag}\`)`,
+            `Tài khoản: **${accountName || "Đang kết nối..."}**`,
+            `Số Quest hoàn thành: **${completedCount}**`,
+            `Thời gian: \`${timeStr}\``,
+            `Trạng thái: **${status}**`
+        ].join("\n");
+
+        const embed = new EmbedBuilder()
+            .setTitle(title)
+            .setDescription(desc);
+
+        if (!isError && avatarUrl) {
+            embed.setThumbnail(avatarUrl);
+        }
+
+        await logChannel.send({ embeds: [embed] });
+    } catch (err) {
+        console.warn("[Log Channel] Không thể gửi log:", err.message);
+    }
+}
+
 function getOnTimestamp(d = new Date()) {
     return d.toLocaleTimeString("en-GB", {
         timeZone: "Asia/Ho_Chi_Minh",
@@ -239,6 +289,15 @@ const commands = [
                 .setRequired(false)
                 .setMinValue(0)
                 .setMaxValue(23)
+        ),
+    new SlashCommandBuilder()
+        .setName("setchannellog")
+        .setDescription("Thiết lập kênh gửi log tiến trình cày quest")
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addChannelOption(opt =>
+            opt.setName("channel")
+                .setDescription("Kênh văn bản nhận log tiến trình quest")
+                .setRequired(true)
         )
 ].map(cmd => cmd.toJSON());
 
@@ -388,6 +447,15 @@ function createSpawnPayload() {
         )
     );
 
+    container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
+
+    container.addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+            "> **Lưu ý:** Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản trước khi bấm **Cày Ọp**!\n\n" +
+            "**Cảnh báo:** Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn."
+        )
+    );
+
     const files = [];
     if (fs.existsSync(BANNER_PATH)) {
         files.push(new AttachmentBuilder(BANNER_PATH, { name: "banner.png" }));
@@ -397,15 +465,6 @@ function createSpawnPayload() {
             )
         );
     }
-
-    container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
-
-    container.addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(
-            "> **Lưu ý:** Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản trước khi bấm **Cày Ọp**!\n\n" +
-            "**Cảnh báo:** Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn."
-        )
-    );
 
     const buttons = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -633,6 +692,14 @@ async function runAllWhitelistedQuests(channel) {
         const token = getDecryptedToken(entry);
         if (!token) {
             allResults.push({ username, userId, error: "Không thể giải mã token." });
+            await sendQuestLog({
+                user: { id: entry.addedBy || userId, username: entry.username || username },
+                accountName: entry.username || username,
+                completedCount: 0,
+                elapsedSeconds: 0,
+                status: "Lỗi (Không thể giải mã token.)",
+                isError: true
+            });
             return;
         }
 
@@ -640,6 +707,14 @@ async function runAllWhitelistedQuests(channel) {
         if (!health.ok && health.dead) {
             console.warn(`[Auto-Schedule] Token của ${username} đã hết hạn hoặc không hợp lệ.`);
             allResults.push({ username, userId, error: "Token đã hết hạn hoặc không hợp lệ (cần /whitelist lại)." });
+            await sendQuestLog({
+                user: { id: entry.addedBy || userId, username: entry.username || username },
+                accountName: "Đang kết nối...",
+                completedCount: 0,
+                elapsedSeconds: 0,
+                status: "Lỗi (Token Discord không hợp lệ hoặc đã bị đổi.)",
+                isError: true
+            });
             return;
         }
 
@@ -649,12 +724,45 @@ async function runAllWhitelistedQuests(channel) {
             startedAt: Date.now()
         });
 
+        const startAccTime = Date.now();
         try {
             console.log(`[Auto-Schedule] Đang xử lý: ${username} (${userId})`);
             const result = await runQuestsForUser(token, null);
             allResults.push({ username, userId, ...result });
+
+            const elapsedSec = Math.max(1, Math.round((Date.now() - startAccTime) / 1000));
+            if (result.error) {
+                await sendQuestLog({
+                    user: { id: entry.addedBy || userId, username: entry.username || username },
+                    accountName: entry.username || username,
+                    completedCount: 0,
+                    elapsedSeconds: elapsedSec,
+                    status: `Lỗi (${result.error})`,
+                    isError: true
+                });
+            } else {
+                const okCount = result.results ? result.results.filter(x => x.success).length : 0;
+                await sendQuestLog({
+                    user: { id: entry.addedBy || userId, username: entry.username || username },
+                    accountName: entry.username || username,
+                    completedCount: okCount,
+                    elapsedSeconds: elapsedSec,
+                    status: "Hoàn tất",
+                    isError: false,
+                    avatarUrl: entry.avatarUrl
+                });
+            }
         } catch (err) {
             allResults.push({ username, userId, error: err.message });
+            const elapsedSec = Math.max(1, Math.round((Date.now() - startAccTime) / 1000));
+            await sendQuestLog({
+                user: { id: entry.addedBy || userId, username: entry.username || username },
+                accountName: entry.username || username,
+                completedCount: 0,
+                elapsedSeconds: elapsedSec,
+                status: `Lỗi (${err.message})`,
+                isError: true
+            });
         } finally {
             activeSessions.delete(userId);
         }
@@ -1003,6 +1111,49 @@ client.on("interactionCreate", async (interaction) => {
                 }
                 return;
             }
+
+            // --- /setchannellog ---
+            if (interaction.commandName === "setchannellog") {
+                const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+                if (!isAdmin) {
+                    try {
+                        await interaction.reply({
+                            content: "Bạn cần có quyền Quản trị viên (Administrator) để thiết lập kênh log.",
+                            flags: 64
+                        });
+                    } catch (_) {}
+                    return;
+                }
+
+                const targetChannel = interaction.options.getChannel("channel");
+                if (!targetChannel || !targetChannel.isTextBased()) {
+                    try {
+                        await interaction.reply({
+                            content: "Vui lòng chọn một kênh văn bản hợp lệ.",
+                            flags: 64
+                        });
+                    } catch (_) {}
+                    return;
+                }
+
+                config.logChannelId = targetChannel.id;
+                saveConfig(config);
+
+                console.log(`[Log Channel] Đã cài đặt kênh log: #${targetChannel.name} (${targetChannel.id})`);
+
+                const embed = new EmbedBuilder()
+                    .setColor(0x23A55A)
+                    .setTitle("Cài Đặt Kênh Log Thành Công")
+                    .setDescription(`Đã thiết lập kênh gửi log tiến trình quest thành <#${targetChannel.id}>.`)
+                    .setTimestamp();
+
+                try {
+                    await interaction.reply({ embeds: [embed], flags: 64 });
+                } catch (err) {
+                    if (err.code === 10062 || err.code === 40060) return;
+                }
+                return;
+            }
         }
 
         // ================================================================
@@ -1123,6 +1274,14 @@ client.on("interactionCreate", async (interaction) => {
 
             const health = await validateTokenHealth(token);
             if (!health.ok && health.dead) {
+                await sendQuestLog({
+                    user: interaction.user,
+                    accountName: "Đang kết nối...",
+                    completedCount: 0,
+                    elapsedSeconds: 0,
+                    status: "Lỗi (Token Discord không hợp lệ hoặc đã bị đổi.)",
+                    isError: true
+                });
                 try {
                     await interaction.editReply({
                         content: `Token của tài khoản **${username}** đã hết hạn hoặc không hợp lệ. Vui lòng dùng lệnh \`/whitelist\` để cập nhật lại token!`
@@ -1226,7 +1385,16 @@ client.on("interactionCreate", async (interaction) => {
                 });
 
                 if (outcome.error) {
+                    const elapsedSec = Math.max(0, Math.round((Date.now() - startTime) / 1000));
                     await updateBoth({ content: outcome.error, embeds: [] });
+                    await sendQuestLog({
+                        user: interaction.user,
+                        accountName: entry.username || username,
+                        completedCount: 0,
+                        elapsedSeconds: elapsedSec,
+                        status: `Lỗi (${outcome.error})`,
+                        isError: true
+                    });
                 } else {
                     const successQuests = outcome.results.filter(r => r.success);
                     const skippedQuests = outcome.results.filter(r => r.skipped || r.requiresPlayer);
@@ -1279,6 +1447,17 @@ client.on("interactionCreate", async (interaction) => {
                     await updateBoth({ embeds: [finalEmbed], files });
                     console.log(`[Cày Ọp] Hoàn thành cho ${username}: ${successQuests.length} thành công, ${failQuests.length} thất bại, ${skippedQuests.length} bỏ qua. Thời gian: ${elapsedStr}.`);
 
+                    const avatarUrl = interaction.user.displayAvatarURL({ extension: "png", size: 256 }) || entry.avatarUrl;
+                    await sendQuestLog({
+                        user: interaction.user,
+                        accountName: entry.username || username,
+                        completedCount: successQuests.length,
+                        elapsedSeconds: elapsedSec,
+                        status: "Hoàn tất",
+                        isError: false,
+                        avatarUrl
+                    });
+
                     // Gửi thông báo kèm tin nhắn ping trong DM để người dùng biết khi hoàn thành
                     if (dmMessage) {
                         try {
@@ -1288,6 +1467,17 @@ client.on("interactionCreate", async (interaction) => {
                         } catch (_) {}
                     }
                 }
+            } catch (err) {
+                const elapsedSec = Math.max(0, Math.round((Date.now() - startTime) / 1000));
+                await sendQuestLog({
+                    user: interaction.user,
+                    accountName: entry.username || username,
+                    completedCount: 0,
+                    elapsedSeconds: elapsedSec,
+                    status: `Lỗi (${err.message})`,
+                    isError: true
+                });
+                console.error(`[Cày Ọp] Lỗi tiến trình cho ${username}:`, err);
             } finally {
                 activeSessions.delete(targetUserId);
             }

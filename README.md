@@ -72,3 +72,4 @@ Chỉ cần click đúp vào file **`Start-Ivyseal-Bot.bat`** (hoặc mở termi
 - **`/unwhitelist [user]`**: Xóa tài khoản khỏi whitelist (thành viên chỉ có thể xóa chính mình, Admin có thể chọn xóa người khác).
 - **`/whitelisted`**: Xem danh sách các tài khoản đã được whitelist trong hệ thống (*Chỉ Quản trị viên*).
 - **`/autoschedule <ngay> [gio]`**: Lên lịch tự động cày ọp hàng tuần với tùy chọn giờ chạy và hàng đợi song song (*Chỉ Quản trị viên*).
+- **`/setchannellog <channel>`**: Thiết lập kênh gửi log tiến trình cày quest (*Chỉ Quản trị viên*).
