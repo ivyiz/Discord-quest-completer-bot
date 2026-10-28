@@ -1,75 +1,91 @@
-# 🤖 Ivyseal DQC Discord Bot 🚀
+# Ivyseal DQC Bot - Discord Quest Automation
 
-> Bot Discord hỗ trợ thành viên trong server **Tự Động Làm Quest Discord**, tích lũy Orbs để đổi vật phẩm trang trí hồ sơ (Avatar Decoration / Effects) thông qua lệnh Slash Command **`/dqcspawn`**.
+A Discord bot that automatically completes **Discord Quests** (watch video / play game / stream) to collect Orbs. It works through a control panel posted by `/dqcspawn` and stores member tokens in encrypted form.
 
----
-
-## 🌟 Tính Năng Chính
-
-1. **Lệnh Slash Command `/dqcspawn`**:
-   - Quản trị viên hoặc thành viên chỉ cần gõ `/dqcspawn` trong kênh bất kỳ để triệu hồi bảng điều khiển của Ivyseal.
-2. **Embed Giao Diện Tuyệt Đẹp**:
-   - Tiêu đề: **✨ Tự Động Làm Quest Của Ivyseal**
-   - Mô tả: **🎯 Tự động hoàn thành quest, nhận Orb để đổi decor dễ hơn**
-   - Cảnh báo: **⚠️ Lưu ý : Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn**
-3. **Bảo Mật Tuyệt Đối Bằng Discord Modal (Ephemeral)**:
-   - Khi bấm **"🚀 Bắt Đầu Làm Quest"**, Discord sẽ bật lên một khung popup bí mật để thành viên nhập Token.
-   - **Chỉ duy nhất người đó nhìn thấy**, không bao giờ bị lộ token vào kênh chat chung của server!
-4. **Cập Nhật Tiến Trình Thời Gian Thực**:
-   - Hiển thị thanh tiến trình trực quan ngay trong tin nhắn: `[████████░░] 80% (12/15 phút)`.
-   - Tự động hoàn thành và nhắc nhở thành viên vào Discord nhận thưởng an toàn.
-   - Thành viên cần liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản trước khi cày.
+> Warning: this bot uses personal account tokens (self-bot). That **violates the Discord Terms of Service** and can get the account banned. Use for learning purposes only, at your own risk.
 
 ---
 
-## 📂 Cấu Trúc Thư Mục
+## Features
 
-Thư mục: `C:\Users\kabir\.gemini\antigravity-ide\scratch\ivyseal-dqc-bot`
+**Control panel**
+- `/dqcspawn` sends a **Components V2** panel (Container + TextDisplay + MediaGallery) with the `banner.png` image.
+- Three buttons: **Run Quests**, **View Quest List**, **How to get token**.
 
-| Tệp tin | Chức năng |
+**Quest runner**
+- Fetches quests from `GET /quests/@me`, dropping already-claimed and expired quests.
+- Prioritizes **short video quests** first, then **15-minute game/stream** quests, sorted by duration.
+- Auto-enrolls quests (`location: 11`) and handles HTTP 429: waits when `retry_after <= 30s`, skips when longer, up to 3 retries.
+- Video quests: `POST /quests/{id}/video-progress` every 8 seconds, adding 8s each call.
+- Game/stream quests: `POST /quests/{id}/heartbeat` every 30 seconds, finalized with `terminal: true`.
+- Quest that does not advance after 3 attempts is **skipped** (requires real gameplay) and the next quest starts after 2 seconds.
+- Safe spacing between quests: **15 seconds** for video / 200-Orb quests, **60 seconds** for 15-minute game quests.
+- The bot **does not claim rewards**; users must claim in Discord manually.
+
+**Progress tracking**
+- Progress embed is sent to the user's **DM** (survives page reload) and mirrored to the ephemeral reply.
+- Visual progress bar `[########....] 80%`, relative completion time via `<t:...:R>`, Orb amount including the Nitro 1.2x rate.
+- Final summary embed: quests succeeded / failed / skipped, total Orbs, elapsed time.
+- Optional per-run log sent to a configured log channel.
+
+**Account management**
+- `/whitelist` opens a private modal for the token, which is **AES-256-GCM encrypted** before being written to `whitelist.json`.
+- Legacy plaintext tokens are **re-encrypted automatically** on startup.
+- A Discord user can be linked to an account entry through the `addedBy` field.
+- Duplicate runs are blocked: one account has at most one active session (`manual` or `auto`).
+- Dead tokens (401 / 40001) are detected and the user is told to run `/whitelist` again.
+
+**Automation and operation**
+- `/autoschedule` sets a weekly run; the checker runs every 15 minutes and only fires once per day.
+- Parallel account processing with `maxConcurrentQuests` (1-5, default 2); each worker starts 5 seconds apart and sleeps 5-15 seconds randomly between accounts.
+- Logger mirrors all `console.log/warn/error` to `logs/ivyseal-YYYY-MM-DD.log`, redacting Discord caches and truncating lines over 5000 characters.
+- Handles `unhandledRejection`, `uncaughtException`, `client.error` and `shardError` so the bot survives network issues.
+
+---
+
+## Requirements
+
+| Component | Requirement |
 | :--- | :--- |
-| **`index.js`** | Mã nguồn chính của Bot Discord (xử lý slash command `/dqcspawn`, embed, buttons, modal). |
-| **`quest-engine.js`** | Động cơ cày Quest kế thừa từ `dqc.txt` (Orion API, heartbeat 30s, auto-claim). |
-| **`config.json`** | Chứa `botToken`, `clientId` và `guildId` (tùy chọn). |
-| **`Start-Ivyseal-Bot.bat`** | File khởi động nhanh bot trên Windows. |
+| Node.js | **18 or newer** (uses built-in `fetch`) |
+| Library | `discord.js` ^14.27.0 (Components V2) |
+| OS | Windows (`.bat` launcher included) or Linux/macOS via `node index.js` |
+| Intents | Only `Guilds` and `GuildMessages` - **no** privileged intents needed |
 
 ---
 
-## 🔑 Hướng Dẫn Thiết Lập Bot (Trong 2 Phút)
+## Project structure
 
-### Bước 1: Tạo Bot trên Discord Developer Portal
-1. Truy cập [Discord Developer Portal](https://discord.com/developers/applications).
-2. Nhấn nút **"New Application"**, đặt tên cho bot (ví dụ: `Ivyseal DQC`).
-3. Vào mục **Bot** ở menu bên trái:
-   - Bấm **"Reset Token"** để lấy **Bot Token** của bạn.
-4. Vào mục **General Information**:
-   - Copy **Application ID** (đây là `clientId`).
-5. Vào mục **OAuth2 > URL Generator**:
-   - Chọn scope: `bot` và `applications.commands`.
-   - Chọn Bot Permissions: `Send Messages`, `Embed Links`, `Attach Files`, `Use External Emojis`.
-   - Copy link phía dưới và mở trên trình duyệt để mời Bot vào Discord Server của bạn.
-
-### Bước 2: Điền thông tin vào `config.json`
-Mở file `config.json` và dán thông tin vừa lấy:
-```json
-{
-  "botToken": "DÁN_BOT_TOKEN_CỦA_BẠN_VÀO_ĐÂY",
-  "clientId": "DÁN_APPLICATION_ID_VÀO_ĐÂY",
-  "guildId": "ID_SERVER_CỦA_BẠN_ĐỂ_CẬP_NHẬT_LỆNH_NGAY_LẬP_TỨC"
-}
-```
-*(Nếu để trống `guildId`, bot sẽ đăng ký lệnh toàn cầu mất khoảng vài phút).*
-
-### Bước 3: Khởi chạy Bot
-Chỉ cần click đúp vào file **`Start-Ivyseal-Bot.bat`** (hoặc mở terminal gõ `node index.js`).
+| File | Purpose |
+| :--- | :--- |
+| `index.js` | Main code: slash command registration, panel, modals, buttons, quest flow, auto-schedule, log sending. |
+| `quest-engine.js` | Discord API calls (`/quests/@me`, `enroll`, `video-progress`, `heartbeat`), quest type detection, Orb calculation, retry and rate-limit handling. |
+| `crypto-util.js` | AES-256-GCM token encryption/decryption, generates and persists `encryptionKey`. |
+| `logger.js` | Writes logs to daily files; must be required first inside `index.js`. |
+| `config.example.json` | Configuration template, copy to `config.json`. |
+| `config.json` | Real configuration (gitignored), also stores `encryptionKey`. |
+| `whitelist.json` | Whitelisted accounts (tokens already encrypted). |
+| `schedule.json` | Auto-schedule state. |
+| `banner.png` | Image used in the panel and progress embeds. |
+| `ivyseal_avatar.gif` | Spare asset, currently **unused** by the code. |
+| `Start-Ivyseal-Bot.bat` | Quick launcher for Windows. |
+| `logs/` | Log directory, created automatically at runtime. |
 
 ---
 
-## 🎮 Danh Sách Slash Commands
-- **`/dqcspawn`**: Triệu hồi bảng điều khiển cày ọp (kèm 3 nút: Cày Ọp, Xem Danh Sách Quest, Hướng dẫn lấy token).
-- **`/quests`**: Xem danh sách nhiệm vụ Discord, trạng thái và tổng Orb có thể cày của tài khoản.
-- **`/whitelist`**: Thêm hoặc cập nhật tài khoản vào whitelist qua Modal bí mật (tự động mã hóa AES-256-GCM).
-- **`/unwhitelist [user]`**: Xóa tài khoản khỏi whitelist (thành viên chỉ có thể xóa chính mình, Admin có thể chọn xóa người khác).
-- **`/whitelisted`**: Xem danh sách các tài khoản đã được whitelist trong hệ thống (*Chỉ Quản trị viên*).
-- **`/autoschedule <ngay> [gio]`**: Lên lịch tự động cày ọp hàng tuần với tùy chọn giờ chạy và hàng đợi song song (*Chỉ Quản trị viên*).
-- **`/setchannellog <channel>`**: Thiết lập kênh gửi log tiến trình cày quest (*Chỉ Quản trị viên*).
+## Setup
+
+### 1. Create the bot on the Discord Developer Portal
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**.
+2. Open the **Bot** tab, click **Reset Token**, and copy the **Bot Token**.
+3. Open **General Information** and copy the **Application ID** (this is `clientId`).
+4. Open **OAuth2 > URL Generator**:
+   - Scopes: `bot`, `applications.commands`
+   - Permissions: `Send Messages`, `Embed Links`, `Attach Files`, `Use External Emojis`, `Read Message History` (required for the log channel).
+   - Open the generated URL to invite the bot.
+
+> Shortcut: on startup the console prints an invite link with `permissions=8` (Administrator).
+
+### 2. Install dependencies
+```bash
+npm install
