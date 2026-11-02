@@ -25,7 +25,7 @@ function getOrCreateEncryptionKey(configPath) {
     try {
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
     } catch (err) {
-        console.warn("[Crypto] Không thể lưu encryptionKey vào config:", err.message);
+        console.warn("[Crypto] Could not save encryptionKey to config:", err.message);
     }
 
     return Buffer.from(newKey, "hex");
@@ -64,7 +64,7 @@ function decryptToken(storedToken, keyBuffer) {
         decrypted += decipher.final("utf8");
         return decrypted;
     } catch (err) {
-        console.error("[Crypto] Lỗi giải mã token:", err.message);
+        console.error("[Crypto] Failed to decrypt token:", err.message);
         return "";
     }
 }

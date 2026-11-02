@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * 📝 IVYSEAL LOGGER — Ghi log ra file tự động
- * ============================================================================
- * Require file này ở đầu index.js để tự động ghi tất cả console.log/warn/error
- * ra file log theo ngày trong thư mục logs/
- * ============================================================================
- */
-
 const fs = require("fs");
 const path = require("path");
 
@@ -50,7 +41,6 @@ function safeFormat(a) {
 function writeToFile(level, args) {
     const timestamp = new Date().toISOString();
     let message = args.map(safeFormat).join(" ");
-    // Giới hạn độ dài tối đa mỗi dòng log tránh nghẽn I/O
     if (message.length > 5000) {
         message = message.slice(0, 5000) + "... [TRUNCATED]";
     }
@@ -60,7 +50,6 @@ function writeToFile(level, args) {
     } catch (_) {}
 }
 
-// Patch console methods
 const _log = console.log;
 const _warn = console.warn;
 const _error = console.error;

@@ -1,22 +1,5 @@
-/**
- * ============================================================================
- * IVYSEAL DQC BOT — DỊCH VỤ TỰ ĐỘNG CÀY ỌP
- * ============================================================================
- * Lệnh:
- *   /dqcspawn           : Triệu hồi bảng điều khiển
- *   /whitelist           : Thêm tài khoản vào whitelist (nhập token qua modal)
- *   /whitelisted         : Xem danh sách tài khoản đã whitelist
- *   /autoschedule <ngày> : Lên lịch tự động cày ọp hàng tuần
- *
- * Nút bấm:
- *   🔥 Cày Ọp           : Tự động làm quest cho tài khoản đã whitelist
- *   Hướng dẫn lấy token : Hướng dẫn chi tiết
- * ============================================================================
- */
-
 process.env.TZ = "Asia/Ho_Chi_Minh";
 
-// Logger — phải require ĐẦU TIÊN để patch console
 require("./logger.js");
 
 const {
@@ -58,9 +41,6 @@ const {
     getQuestIntermissionDelay
 } = require("./quest-engine.js");
 
-// ============================================================================
-// CẤU HÌNH & DỮ LIỆU
-// ============================================================================
 const CONFIG_PATH = path.join(__dirname, "config.json");
 const WHITELIST_PATH = path.join(__dirname, "whitelist.json");
 const SCHEDULE_PATH = path.join(__dirname, "schedule.json");
@@ -77,7 +57,6 @@ const ENCRYPTION_KEY = getOrCreateEncryptionKey(CONFIG_PATH);
 let config = {};
 try { config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); }
 catch (_) { config = { botToken: "", clientId: "", guildId: "" }; }
-// Ưu tiên biến môi trường (Railway/hosting), fallback về config.json khi chạy local
 if (process.env.BOT_TOKEN)  config.botToken = process.env.BOT_TOKEN;
 if (process.env.CLIENT_ID)  config.clientId  = process.env.CLIENT_ID;
 if (process.env.GUILD_ID)   config.guildId   = process.env.GUILD_ID;
@@ -88,7 +67,6 @@ function saveConfig(data) {
         fs.writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2), "utf8");
     } catch (_) {}
 }
-
 
 function loadWhitelist() {
     try { return JSON.parse(fs.readFileSync(WHITELIST_PATH, "utf8")); }
@@ -121,7 +99,7 @@ function migrateExistingTokens() {
     }
     if (updated) {
         saveWhitelist(list);
-        console.log("[Crypto] Đã mã hóa toàn bộ token hiện có trong whitelist sang AES-256-GCM.");
+        console.log("[Crypto] Successfully migrated all existing tokens to AES-256-GCM encryption.");
     }
 }
 
@@ -136,17 +114,12 @@ async function validateTokenHealth(token) {
     }
 }
 
-// Map quản lý phiên đang cày: targetUserId -> { type: 'manual' | 'auto', username, startedAt }
 const activeSessions = new Map();
 
-// ============================================================================
-// CLIENT & UTILITIES
-// ============================================================================
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
-// Chống crash bot khi mạng chập chờn, handshake timeout hoặc WebSocket disconnect
 client.on("error", (err) => {
     console.warn("[Discord Client Error]:", err.message);
 });
@@ -173,10 +146,10 @@ function formatTime(seconds) {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
-    if (h > 0 && m > 0) return `${h} giờ ${m} phút`;
-    if (h > 0) return `${h} giờ`;
-    if (m > 0 && s > 0) return `${m} phút ${s}s`;
-    if (m > 0) return `${m} phút`;
+    if (h > 0 && m > 0) return `${h}h ${m}m`;
+    if (h > 0) return `${h}h`;
+    if (m > 0 && s > 0) return `${m}m ${s}s`;
+    if (m > 0) return `${m}m`;
     return `${s}s`;
 }
 
@@ -195,7 +168,7 @@ async function sendQuestLog({ user, accountName, completedCount = 0, elapsedSeco
         const logChannel = await client.channels.fetch(config.logChannelId).catch(() => null);
         if (!logChannel || !logChannel.isTextBased()) return;
 
-        const title = isError ? "Lỗi Tiến Trình Quest" : "Hoàn Tất Tiến Trình Quest";
+        const title = isError ? "Quest Progress Error" : "Quest Progress Completed";
         const timeStr = formatLogDuration(elapsedSeconds);
 
         const userId = user?.id || "0";
@@ -203,10 +176,10 @@ async function sendQuestLog({ user, accountName, completedCount = 0, elapsedSeco
 
         const desc = [
             `User: <@${userId}> (\`${userTag}\`)`,
-            `Tài khoản: **${accountName || "Đang kết nối..."}**`,
-            `Số Quest hoàn thành: **${completedCount}**`,
-            `Thời gian: \`${timeStr}\``,
-            `Trạng thái: **${status}**`
+            `Account: **${accountName || "Connecting..."}**`,
+            `Quests Completed: **${completedCount}**`,
+            `Time Elapsed: \`${timeStr}\``,
+            `Status: **${status}**`
         ].join("\n");
 
         const embed = new EmbedBuilder()
@@ -219,7 +192,7 @@ async function sendQuestLog({ user, accountName, completedCount = 0, elapsedSeco
 
         await logChannel.send({ embeds: [embed] });
     } catch (err) {
-        console.warn("[Log Channel] Không thể gửi log:", err.message);
+        console.warn("[Log Channel] Failed to send log:", err.message);
     }
 }
 
@@ -234,69 +207,66 @@ function getOnTimestamp(d = new Date()) {
 let botOnlineTime = getOnTimestamp();
 
 const DAY_NAMES = {
-    0: "Chủ Nhật", 1: "Thứ 2", 2: "Thứ 3", 3: "Thứ 4",
-    4: "Thứ 5", 5: "Thứ 6", 6: "Thứ 7"
+    0: "Sunday", 1: "Monday", 2: "Tuesday", 3: "Wednesday",
+    4: "Thursday", 5: "Friday", 6: "Saturday"
 };
 
-// ============================================================================
-// ĐĂNG KÝ SLASH COMMANDS
-// ============================================================================
 const commands = [
     new SlashCommandBuilder()
         .setName("dqcspawn")
-        .setDescription("Triệu hồi bảng điều khiển Tự Động Cày Ọp"),
+        .setDescription("Summon the Auto Quest Completer dashboard"),
     new SlashCommandBuilder()
         .setName("whitelist")
-        .setDescription("Thêm tài khoản vào whitelist (nhập token an toàn qua popup)")
+        .setDescription("Add an account to whitelist (securely enter token via modal)")
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName("unwhitelist")
-        .setDescription("Xóa tài khoản khỏi danh sách whitelist")
+        .setDescription("Remove an account from whitelist")
         .addUserOption(opt =>
             opt.setName("user")
-                .setDescription("Người dùng Discord muốn xóa (để trống nếu muốn xóa chính mình)")
+                .setDescription("Discord user to remove (leave empty to remove yourself)")
                 .setRequired(false)
         ),
     new SlashCommandBuilder()
         .setName("quests")
-        .setDescription("Xem danh sách nhiệm vụ Discord và số Orb có thể cày"),
+        .setDescription("View pending Discord quests and obtainable Orbs"),
     new SlashCommandBuilder()
         .setName("whitelisted")
-        .setDescription("Xem danh sách tài khoản đã được whitelist (Chỉ Quản trị viên)")
+        .setDescription("View whitelisted accounts (Administrator only)")
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName("autoschedule")
-        .setDescription("Lên lịch tự động cày ọp hàng tuần cho tất cả tài khoản (Chỉ Quản trị viên)")
+        .setDescription("Schedule weekly auto quest completion for all accounts (Admin only)")
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption(opt =>
-            opt.setName("ngay")
-                .setDescription("Chọn thứ trong tuần để chạy tự động")
+            opt.setName("day")
+                .setDescription("Select day of the week to run automatically")
                 .setRequired(true)
                 .addChoices(
-                    { name: "Thứ 2", value: "1" },
-                    { name: "Thứ 3", value: "2" },
-                    { name: "Thứ 4", value: "3" },
-                    { name: "Thứ 5", value: "4" },
-                    { name: "Thứ 6", value: "5" },
-                    { name: "Thứ 7", value: "6" },
-                    { name: "Chủ Nhật", value: "0" },
-                    { name: "Tắt lịch", value: "-1" }
+                    { name: "Monday", value: "1" },
+                    { name: "Tuesday", value: "2" },
+                    { name: "Wednesday", value: "3" },
+                    { name: "Thursday", value: "4" },
+                    { name: "Friday", value: "5" },
+                    { name: "Saturday", value: "6" },
+                    { name: "Sunday", value: "0" },
+                    { name: "Disable schedule", value: "-1" }
                 )
         )
         .addIntegerOption(opt =>
-            opt.setName("gio")
-                .setDescription("Giờ chạy trong ngày (0 - 23, mặc định là 8)")
+            opt.setName("hour")
+                .setDescription("Hour of the day to run (0 - 23, default: 8)")
                 .setRequired(false)
                 .setMinValue(0)
                 .setMaxValue(23)
         ),
     new SlashCommandBuilder()
         .setName("setchannellog")
-        .setDescription("Thiết lập kênh gửi log tiến trình cày quest")
+        .setDescription("Set the logging channel for quest progress")
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addChannelOption(opt =>
             opt.setName("channel")
-                .setDescription("Kênh văn bản nhận log tiến trình quest")
+                .setDescription("Text channel to receive quest logs")
                 .setRequired(true)
         )
 ].map(cmd => cmd.toJSON());
@@ -307,26 +277,23 @@ async function registerCommands(token, clientId, guildId) {
 
     if (guildId) {
         try {
-            console.log(`[Bot] Đang đăng ký lệnh cho Server ${guildId}...`);
+            console.log(`[Bot] Registering commands for Server ${guildId}...`);
             await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
-            console.log(`[Bot] Đã đăng ký 4 lệnh cho Server: ${guildId}`);
+            console.log(`[Bot] Successfully registered 4 commands for Server: ${guildId}`);
             return;
         } catch (error) {
-            console.warn(`[Bot] Không thể đăng ký cho Server ${guildId}: ${error.message}`);
+            console.warn(`[Bot] Failed to register commands for Server ${guildId}: ${error.message}`);
         }
     }
     try {
-        console.log("[Bot] Đang đăng ký lệnh toàn cầu...");
+        console.log("[Bot] Registering global commands...");
         await rest.put(Routes.applicationCommands(clientId), { body: commands });
-        console.log("[Bot] Đã đăng ký lệnh toàn cầu thành công.");
+        console.log("[Bot] Successfully registered global commands.");
     } catch (error) {
-        console.error("[Bot] Lỗi đăng ký Slash Command:", error);
+        console.error("[Bot] Slash Command registration error:", error);
     }
 }
 
-// ============================================================================
-// EMBEDS & HELPERS
-// ============================================================================
 async function showUserQuests(interaction, callerId) {
     const whitelist = loadWhitelist();
     let entry = whitelist[callerId];
@@ -342,7 +309,7 @@ async function showUserQuests(interaction, callerId) {
     if (!entry) {
         try {
             await interaction.reply({
-                content: "Bạn chưa được whitelist!\n> Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản.",
+                content: "You are not whitelisted!\n> Please contact **@ivy.ls** to request access.",
                 flags: 64
             });
         } catch (_) {}
@@ -363,7 +330,7 @@ async function showUserQuests(interaction, callerId) {
     if (!health.ok && health.dead) {
         try {
             await interaction.editReply({
-                content: `Token của tài khoản **${username}** đã hết hạn hoặc không hợp lệ. Vui lòng dùng lệnh \`/whitelist\` để cập nhật lại token!`
+                content: `Token for account **${username}** has expired or is invalid. Please use \`/whitelist\` to update your token!`
             });
         } catch (_) {}
         return;
@@ -373,7 +340,26 @@ async function showUserQuests(interaction, callerId) {
         const quests = await fetchUserQuests(token);
         if (!quests || quests.length === 0) {
             await interaction.editReply({
-                content: `Tài khoản **${username}** hiện không có nhiệm vụ Discord nào khả dụng.`
+                content: `Account **${username}** currently has no available Discord quests.`
+            });
+            return;
+        }
+
+        const uncompletedQuests = quests.filter(q => {
+            if (!q || !q.config) return false;
+            if (isQuestExpired(q)) return false;
+            const userStatus = q.user_status;
+            if (userStatus?.claimed_at || userStatus?.completed_at) return false;
+            const task = detectQuestTask(q);
+            const curSec = userStatus?.progress?.[task.keyName]?.value || 0;
+            const targetSec = task.target || 900;
+            if (curSec >= targetSec) return false;
+            return true;
+        });
+
+        if (uncompletedQuests.length === 0) {
+            await interaction.editReply({
+                content: `Account **${username}** currently has no pending quests (all quests are completed or expired).`
             });
             return;
         }
@@ -382,43 +368,31 @@ async function showUserQuests(interaction, callerId) {
         let totalNitroOrbs = 0;
         const questLines = [];
 
-        for (let i = 0; i < quests.length; i++) {
-            const q = quests[i];
+        for (let i = 0; i < uncompletedQuests.length; i++) {
+            const q = uncompletedQuests[i];
             const name = getQuestName(q);
             const task = detectQuestTask(q);
             const orbs = getQuestOrbs(q, false);
             const nitroOrbs = getQuestOrbs(q, true);
-            const isExpired = isQuestExpired(q);
             const userStatus = q.user_status;
 
-            let statusStr = "";
-            if (userStatus?.claimed_at) {
-                statusStr = "Đã nhận thưởng";
-            } else if (userStatus?.completed_at) {
-                statusStr = "Đã xong (chưa nhận thưởng)";
-                totalAvailableOrbs += orbs;
-                totalNitroOrbs += nitroOrbs;
-            } else if (isExpired) {
-                statusStr = "Đã hết hạn";
-            } else {
-                const curSec = userStatus?.progress?.[task.keyName]?.value || 0;
-                const targetSec = task.target || 900;
-                const percent = Math.min(100, Math.floor((curSec / targetSec) * 100));
-                statusStr = percent > 0 ? `Đang làm (${percent}%)` : "Chưa làm";
-                totalAvailableOrbs += orbs;
-                totalNitroOrbs += nitroOrbs;
-            }
+            const curSec = userStatus?.progress?.[task.keyName]?.value || 0;
+            const targetSec = task.target || 900;
+            const percent = Math.min(100, Math.floor((curSec / targetSec) * 100));
+            const statusStr = percent > 0 ? `In progress (${percent}%)` : "Not started";
+            totalAvailableOrbs += orbs;
+            totalNitroOrbs += nitroOrbs;
 
             const typeLabel = task.type === "WATCH_VIDEO" ? "Video" : (task.type === "STREAM" ? "Stream" : "Game");
-            questLines.push(`**${i + 1}. ${name}** [${typeLabel}]\n> Trạng thái: ${statusStr} • Thưởng: **${orbs}** Orbs (${nitroOrbs} với Nitro)`);
+            questLines.push(`**${i + 1}. ${name}** [${typeLabel}]\n> Status: ${statusStr} • Reward: **${orbs}** Orbs (${nitroOrbs} with Nitro)`);
         }
 
         const embed = new EmbedBuilder()
             .setColor(0x5865F2)
-            .setTitle(`Danh Sách Quest — ${username}`)
+            .setTitle(`Pending Quests — ${username}`)
             .setDescription(
-                `• **Tổng số nhiệm vụ:** ${quests.length}\n` +
-                `• **Tổng Orb có thể cày/nhận:** **${totalAvailableOrbs.toLocaleString()}** Orbs (${totalNitroOrbs.toLocaleString()} với Nitro)\n\n` +
+                `• **Total pending quests:** ${uncompletedQuests.length}\n` +
+                `• **Total Orbs to earn:** **${totalAvailableOrbs.toLocaleString()}** Orbs (${totalNitroOrbs.toLocaleString()} with Nitro)\n\n` +
                 questLines.slice(0, 15).join("\n\n")
             )
             .setTimestamp();
@@ -429,9 +403,9 @@ async function showUserQuests(interaction, callerId) {
 
         await interaction.editReply({ embeds: [embed] });
     } catch (err) {
-        console.error("[Quests] Lỗi lấy danh sách quest:", err);
+        console.error("[Quests] Error loading quests:", err);
         await interaction.editReply({
-            content: `Không thể tải danh sách quest cho **${username}**: ${err.message}`
+            content: `Failed to load quests for **${username}**: ${err.message}`
         });
     }
 }
@@ -442,8 +416,8 @@ function createSpawnPayload() {
 
     container.addTextDisplayComponents(
         new TextDisplayBuilder().setContent(
-            "# Dịch Vụ Tự Động Cày Ọp\n" +
-            "Tự động hoàn thành quest Discord, nhận Orb để đổi decor"
+            "# Auto Quest Completer\n" +
+            "Automatically complete Discord quests to earn Orbs for profile decorations"
         )
     );
 
@@ -451,8 +425,8 @@ function createSpawnPayload() {
 
     container.addTextDisplayComponents(
         new TextDisplayBuilder().setContent(
-            "> **Lưu ý:** Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản trước khi bấm **Cày Ọp**!\n\n" +
-            "**Cảnh báo:** Khi sử dụng dịch vụ này, chúng mình không chịu trách nhiệm cho bất cứ điều gì xảy ra trong tài khoản của các bạn."
+            "> **Note:** Please contact **@ivy.ls** to be whitelisted before clicking **Complete Quests**!\n\n" +
+            "**Disclaimer:** By using this service, we assume no liability for any actions taken regarding your account."
         )
     );
 
@@ -469,15 +443,15 @@ function createSpawnPayload() {
     const buttons = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId("ivyseal_btn_cay_op")
-            .setLabel("Cày Ọp")
+            .setLabel("Complete Quests")
             .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
             .setCustomId("ivyseal_btn_view_quests")
-            .setLabel("Xem Danh Sách Quest")
+            .setLabel("View Quest List")
             .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
             .setCustomId("ivyseal_btn_guide")
-            .setLabel("Hướng dẫn lấy token")
+            .setLabel("How to get token")
             .setStyle(ButtonStyle.Secondary)
     );
 
@@ -502,49 +476,46 @@ function buildStatusEmbed(username, activeQuests, totalTimeSec, currentQuest = n
 
     const finalOrbs = isPremium ? totalOrbsNitro : totalOrbsBase;
     const orbDesc = isPremium
-        ? `${finalOrbs.toLocaleString()} Orbs (Đã tính Nitro 1.2x)`
+        ? `${finalOrbs.toLocaleString()} Orbs (Nitro 1.2x applied)`
         : (totalOrbsNitro > totalOrbsBase
-            ? `${finalOrbs.toLocaleString()} Orbs (${totalOrbsNitro.toLocaleString()} với Nitro)`
+            ? `${finalOrbs.toLocaleString()} Orbs (${totalOrbsNitro.toLocaleString()} with Nitro)`
             : `${finalOrbs.toLocaleString()} Orbs`);
 
     const targetTime = finishTimestamp || (Math.floor(Date.now() / 1000) + totalTimeSec);
 
-    let desc = `• **Tài khoản :** ${username}\n` +
-               `• **Tổng nhiệm vụ :** ${activeQuests.length}\n` +
-               `• **Tổng nhận :** ${orbDesc}\n`;
+    let desc = `• **Account :** ${username}\n` +
+               `• **Total Quests :** ${activeQuests.length}\n` +
+               `• **Total Rewards :** ${orbDesc}\n`;
 
     if (currentQuest) {
         const p = Math.min(100, Math.max(0, currentQuest.percent || 0));
         const bar = createProgressBar(p);
         const statusNote = currentQuest.status === "skipped"
-            ? `\n> *Đã thử vài lần nhưng không tăng tiến trình. Đang bỏ qua để sang nhiệm vụ tiếp...*`
+            ? `\n> *Progress did not advance after several attempts. Skipping to the next quest...*`
             : "";
 
         desc += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-                `• **Đang làm [${currentQuest.index + 1}/${currentQuest.total}] :** **${currentQuest.name}**${statusNote}\n` +
-                `• **Tiến trình :** \`${bar}\`\n` +
+                `• **Current [${currentQuest.index + 1}/${currentQuest.total}] :** **${currentQuest.name}**${statusNote}\n` +
+                `• **Progress :** \`${bar}\`\n` +
                 `━━━━━━━━━━━━━━━━━━━━\n\n`;
     } else {
         desc += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-                `• **Trạng thái :** Đang khởi tạo và chuẩn bị nhiệm vụ...\n` +
+                `• **Status :** Initializing and preparing quests...\n` +
                 `━━━━━━━━━━━━━━━━━━━━\n\n`;
     }
 
-    desc += `• **Thời gian hoàn thành :** <t:${targetTime}:R> (khoảng ${formatTime(totalTimeSec)})\n\n` +
-            `• **Lưu ý :** Vui lòng chờ hoàn thành tất cả các quest rồi ấn claim một lần bạn nhé !`;
+    desc += `• **Estimated Completion :** <t:${targetTime}:R> (about ${formatTime(totalTimeSec)})\n\n` +
+            `• **Notice :** Please wait until all quests are completed before claiming your rewards!`;
 
     const embed = new EmbedBuilder()
         .setColor(0x5865F2)
-        .setTitle("Tự Động Cày Ọp")
+        .setTitle("Auto Quest Completer")
         .setImage("attachment://banner.png")
         .setDescription(desc);
 
     return embed;
 }
 
-// ============================================================================
-// CORE: CHẠY QUEST CHO 1 TÀI KHOẢN
-// ============================================================================
 async function runQuestsForUser(token, updateFn) {
     let quests;
     let userInfo;
@@ -554,16 +525,15 @@ async function runQuestsForUser(token, updateFn) {
             fetchUserInfo(token).catch(() => null)
         ]);
     } catch (err) {
-        return { error: `Token không hợp lệ: ${err.message}` };
+        return { error: `Invalid token: ${err.message}` };
     }
 
     if (!quests || quests.length === 0) {
-        return { error: "Không có quest nào." };
+        return { error: "No quests found." };
     }
 
     const isPremium = !!(userInfo?.premium_type && userInfo.premium_type > 0);
 
-    // Lọc bỏ nhiệm vụ đã claim hoặc đã hết hạn
     const activeQuests = quests.filter(q => {
         if (!q || !q.config) return false;
         if (q.user_status?.claimed_at) return false;
@@ -571,7 +541,6 @@ async function runQuestsForUser(token, updateFn) {
         return true;
     });
 
-    // ƯU TIÊN: Chạy các nhiệm vụ Video (ngắn 30s-60s) TRƯỚC, game (15 phút) chạy SAU
     activeQuests.sort((a, b) => {
         const taskA = detectQuestTask(a);
         const taskB = detectQuestTask(b);
@@ -582,10 +551,9 @@ async function runQuestsForUser(token, updateFn) {
     });
 
     if (activeQuests.length === 0) {
-        return { error: "Không có nhiệm vụ nào còn hạn cần làm." };
+        return { error: "No active quests remaining to complete." };
     }
 
-    // Tính thời gian ước lượng (bao gồm thời gian làm nhiệm vụ + thời gian nghỉ an toàn)
     let totalTimeSec = 0;
     for (let i = 0; i < activeQuests.length; i++) {
         const q = activeQuests[i];
@@ -597,7 +565,6 @@ async function runQuestsForUser(token, updateFn) {
         }
     }
 
-    // Gửi embed trạng thái ban đầu
     if (updateFn) await updateFn({ phase: "status", activeQuests, totalTimeSec, isPremium });
 
     const results = [];
@@ -606,12 +573,9 @@ async function runQuestsForUser(token, updateFn) {
     for (let i = 0; i < activeQuests.length; i++) {
         const q = activeQuests[i];
 
-        // Giãn cách an toàn theo yêu cầu:
-        // - Nhiệm vụ 15 phút (game/stream): cách nhau 1 phút (60s)
-        // - Nhiệm vụ 200 orb (xem video): cách nhau 15 giây (15s)
         if (i > 0 && lastQuestWasExecuted) {
             const delayInfo = getQuestIntermissionDelay(q);
-            console.log(`[Ivyseal DQC] Giãn cách an toàn trước "${getQuestName(q)}": Nghỉ ${delayInfo.label}...`);
+            console.log(`[Ivyseal DQC] Safe intermission before "${getQuestName(q)}": Resting ${delayInfo.label}...`);
             await new Promise(r => setTimeout(r, delayInfo.ms));
         }
 
@@ -627,35 +591,30 @@ async function runQuestsForUser(token, updateFn) {
             }
         });
 
-        // Nếu quest hoàn thành thật sự -> đánh dấu để có delay an toàn trước quest tiếp
-        // Nếu quest bị bỏ qua hoặc lỗi -> chỉ nghỉ 2 giây rồi sang quest tiếp theo luôn
         lastQuestWasExecuted = result.success && !result.alreadyCompleted;
         results.push(result);
         if (result.skipped) {
-            console.log(`[Cày Ọp] Quest "${result.questName}": Đã bỏ qua (${result.error || "Cần tự vào game làm"})`);
+            console.log(`[DQC] Quest "${result.questName}": Skipped (${result.error || "Manual gameplay required"})`);
             await new Promise(r => setTimeout(r, 2000));
         } else {
-            console.log(`[Cày Ọp] Quest "${result.questName}": ${result.success ? "Thành công" : "Thất bại"} ${result.error || ""}`);
+            console.log(`[DQC] Quest "${result.questName}": ${result.success ? "Success" : "Failed"} ${result.error || ""}`);
         }
     }
 
     return { results, activeQuests, totalTimeSec, isPremium };
 }
 
-// ============================================================================
-// AUTO-SCHEDULE: CHẠY CHO TẤT CẢ TÀI KHOẢN WHITELIST
-// ============================================================================
 async function runAllWhitelistedQuests(channel) {
     const whitelist = loadWhitelist();
     const entries = Object.entries(whitelist);
 
     if (entries.length === 0) {
-        await channel.send("Không có tài khoản nào trong whitelist để chạy tự động.");
+        await channel.send("No accounts in whitelist to run auto-schedule.");
         return;
     }
 
     const concurrency = Math.max(1, Math.min(5, config.maxConcurrentQuests || 2));
-    console.log(`[Auto-Schedule] Bắt đầu chạy cho ${entries.length} tài khoản (Song song: ${concurrency} luồng)...`);
+    console.log(`[Auto-Schedule] Starting for ${entries.length} accounts (Concurrency: ${concurrency} threads)...`);
 
     const attachment = fs.existsSync(BANNER_PATH)
         ? new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })
@@ -663,8 +622,8 @@ async function runAllWhitelistedQuests(channel) {
 
     const startEmbed = new EmbedBuilder()
         .setColor(0x5865F2)
-        .setTitle("Auto-Schedule: Tự Động Cày Ọp")
-        .setDescription(`Đang xử lý **${entries.length}** tài khoản whitelist (tối đa **${concurrency}** tài khoản chạy cùng lúc)...`)
+        .setTitle("Auto-Schedule: Quest Completer")
+        .setDescription(`Processing **${entries.length}** whitelisted accounts (up to **${concurrency}** running concurrently)...`)
         .setImage(attachment ? "attachment://banner.png" : null)
         .setTimestamp();
 
@@ -680,24 +639,24 @@ async function runAllWhitelistedQuests(channel) {
 
         if (activeSessions.has(userId)) {
             const existing = activeSessions.get(userId);
-            console.log(`[Auto-Schedule] Bỏ qua ${username} (${userId}) vì đang có phiên (${existing.type}).`);
+            console.log(`[Auto-Schedule] Skipping ${username} (${userId}) because a session is already active (${existing.type}).`);
             allResults.push({
                 username,
                 userId,
-                error: `Đang có phiên ${existing.type === "manual" ? "thủ công" : "khác"} đang chạy, bỏ qua để tránh rate limit.`
+                error: `An active ${existing.type === "manual" ? "manual" : "other"} session is running; skipped to prevent rate limits.`
             });
             return;
         }
 
         const token = getDecryptedToken(entry);
         if (!token) {
-            allResults.push({ username, userId, error: "Không thể giải mã token." });
+            allResults.push({ username, userId, error: "Failed to decrypt token." });
             await sendQuestLog({
                 user: { id: entry.addedBy || userId, username: entry.username || username },
                 accountName: entry.username || username,
                 completedCount: 0,
                 elapsedSeconds: 0,
-                status: "Lỗi (Không thể giải mã token.)",
+                status: "Error (Failed to decrypt token.)",
                 isError: true
             });
             return;
@@ -705,14 +664,14 @@ async function runAllWhitelistedQuests(channel) {
 
         const health = await validateTokenHealth(token);
         if (!health.ok && health.dead) {
-            console.warn(`[Auto-Schedule] Token của ${username} đã hết hạn hoặc không hợp lệ.`);
-            allResults.push({ username, userId, error: "Token đã hết hạn hoặc không hợp lệ (cần /whitelist lại)." });
+            console.warn(`[Auto-Schedule] Token for ${username} has expired or is invalid.`);
+            allResults.push({ username, userId, error: "Token expired or invalid (/whitelist required)." });
             await sendQuestLog({
                 user: { id: entry.addedBy || userId, username: entry.username || username },
-                accountName: "Đang kết nối...",
+                accountName: "Connecting...",
                 completedCount: 0,
                 elapsedSeconds: 0,
-                status: "Lỗi (Token Discord không hợp lệ hoặc đã bị đổi.)",
+                status: "Error (Discord token invalid or changed.)",
                 isError: true
             });
             return;
@@ -726,7 +685,7 @@ async function runAllWhitelistedQuests(channel) {
 
         const startAccTime = Date.now();
         try {
-            console.log(`[Auto-Schedule] Đang xử lý: ${username} (${userId})`);
+            console.log(`[Auto-Schedule] Processing: ${username} (${userId})`);
             const result = await runQuestsForUser(token, null);
             allResults.push({ username, userId, ...result });
 
@@ -737,7 +696,7 @@ async function runAllWhitelistedQuests(channel) {
                     accountName: entry.username || username,
                     completedCount: 0,
                     elapsedSeconds: elapsedSec,
-                    status: `Lỗi (${result.error})`,
+                    status: `Error (${result.error})`,
                     isError: true
                 });
             } else {
@@ -747,7 +706,7 @@ async function runAllWhitelistedQuests(channel) {
                     accountName: entry.username || username,
                     completedCount: okCount,
                     elapsedSeconds: elapsedSec,
-                    status: "Hoàn tất",
+                    status: "Completed",
                     isError: false,
                     avatarUrl: entry.avatarUrl
                 });
@@ -760,7 +719,7 @@ async function runAllWhitelistedQuests(channel) {
                 accountName: entry.username || username,
                 completedCount: 0,
                 elapsedSeconds: elapsedSec,
-                status: `Lỗi (${err.message})`,
+                status: `Error (${err.message})`,
                 isError: true
             });
         } finally {
@@ -790,27 +749,25 @@ async function runAllWhitelistedQuests(channel) {
     }
     await Promise.all(workers);
 
-    // Tổng kết
     const lines = allResults.map(r => {
         if (r.error) return `• **${r.username}** — ${r.error}`;
         const ok = r.results ? r.results.filter(x => x.success).length : 0;
         const total = r.results ? r.results.length : 0;
         const skipped = r.results ? r.results.filter(x => x.skipped || x.requiresPlayer).length : 0;
-        const skipText = skipped > 0 ? ` (bỏ qua ${skipped} cần tự làm)` : "";
-        return `• **${r.username}** — ${ok}/${total} nhiệm vụ hoàn thành${skipText}`;
+        const skipText = skipped > 0 ? ` (skipped ${skipped} requiring manual play)` : "";
+        return `• **${r.username}** — ${ok}/${total} quests completed${skipText}`;
     });
 
     const finalEmbed = new EmbedBuilder()
         .setColor(0x23A55A)
-        .setTitle("Auto-Schedule: Hoàn Thành")
-        .setDescription(lines.join("\n") || "Không có kết quả.")
+        .setTitle("Auto-Schedule: Completed")
+        .setDescription(lines.join("\n") || "No results.")
         .setTimestamp();
 
     await msg.edit({ embeds: [finalEmbed] });
-    console.log(`[Auto-Schedule] Hoàn thành xử lý ${entries.length} tài khoản.`);
+    console.log(`[Auto-Schedule] Finished processing ${entries.length} accounts.`);
 }
 
-// Kiểm tra lịch mỗi 15 phút
 function startScheduleChecker() {
     setInterval(async () => {
         try {
@@ -821,30 +778,26 @@ function startScheduleChecker() {
             const currentDay = nowVn.getDay();
             const todayDate = nowVn.toISOString().split("T")[0];
 
-            // Chạy nếu đúng ngày, chưa chạy hôm nay, và từ giờ đã đặt trở đi
             const targetHour = (schedule.hour !== undefined && schedule.hour !== null) ? schedule.hour : 8;
             if (currentDay === schedule.day && schedule.lastRunDate !== todayDate && nowVn.getHours() >= targetHour) {
                 schedule.lastRunDate = todayDate;
                 saveSchedule(schedule);
 
-                console.log(`[Auto-Schedule] Đã đến ${DAY_NAMES[schedule.day]} (từ ${targetHour}:00) — bắt đầu chạy tự động!`);
+                console.log(`[Auto-Schedule] It is now ${DAY_NAMES[schedule.day]} (from ${targetHour}:00) — starting auto-run!`);
 
                 const channel = client.channels.cache.get(schedule.channelId);
                 if (!channel) {
-                    console.warn(`[Auto-Schedule] Không tìm thấy kênh ${schedule.channelId}`);
+                    console.warn(`[Auto-Schedule] Channel ${schedule.channelId} not found`);
                     return;
                 }
                 await runAllWhitelistedQuests(channel);
             }
         } catch (err) {
-            console.error("[Auto-Schedule] Lỗi:", err);
+            console.error("[Auto-Schedule] Error:", err);
         }
-    }, 15 * 60 * 1000); // 15 phút
+    }, 15 * 60 * 1000);
 }
 
-// ============================================================================
-// XỬ LÝ TƯƠNG TÁC
-// ============================================================================
 client.once(Events.ClientReady, async () => {
     client.user.setPresence({
         activities: [{
@@ -857,8 +810,8 @@ client.once(Events.ClientReady, async () => {
 
     botOnlineTime = getOnTimestamp();
     console.log(`\n======================================================`);
-    console.log(`[Bot] Đã đăng nhập: ${client.user.tag} (ID: ${client.user.id})`);
-    console.log(`[Bot] Link mời: https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot%20applications.commands`);
+    console.log(`[Bot] Logged in as: ${client.user.tag} (ID: ${client.user.id})`);
+    console.log(`[Bot] Invite link: https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot%20applications.commands`);
     console.log(`======================================================\n`);
 
     migrateExistingTokens();
@@ -868,23 +821,19 @@ client.once(Events.ClientReady, async () => {
     }
 
     startScheduleChecker();
-    console.log("[Scheduler] Đã bật kiểm tra lịch tự động mỗi 15 phút.");
+    console.log("[Scheduler] Automatic schedule checking enabled (every 15 minutes).");
 
     const schedule = loadSchedule();
     if (schedule.day !== null && schedule.day >= 0) {
         const targetHour = (schedule.hour !== undefined && schedule.hour !== null) ? schedule.hour : 8;
-        console.log(`[Scheduler] Lịch hiện tại: ${DAY_NAMES[schedule.day]} lúc ${targetHour}:00 hàng tuần.`);
+        console.log(`[Scheduler] Active schedule: ${DAY_NAMES[schedule.day]} at ${targetHour}:00 weekly.`);
     }
 });
 
 client.on("interactionCreate", async (interaction) => {
     try {
-        // ================================================================
-        // SLASH COMMANDS
-        // ================================================================
 
         if (interaction.isChatInputCommand()) {
-            // --- /dqcspawn ---
             if (interaction.commandName === "dqcspawn") {
                 const payload = createSpawnPayload();
                 try {
@@ -896,16 +845,15 @@ client.on("interactionCreate", async (interaction) => {
                 return;
             }
 
-            // --- /whitelist (mở modal nhập token) ---
             if (interaction.commandName === "whitelist") {
                 const modal = new ModalBuilder()
                     .setCustomId("ivyseal_modal_whitelist")
-                    .setTitle("Thêm tài khoản vào Whitelist");
+                    .setTitle("Add Account to Whitelist");
 
                 const tokenInput = new TextInputBuilder()
                     .setCustomId("whitelist_token_input")
-                    .setLabel("Token Discord")
-                    .setPlaceholder("Dán token vào đây (an toàn, không ai thấy)...")
+                    .setLabel("Discord Token")
+                    .setPlaceholder("Paste token here (secure, hidden from others)...")
                     .setStyle(TextInputStyle.Short)
                     .setRequired(true);
 
@@ -918,19 +866,17 @@ client.on("interactionCreate", async (interaction) => {
                 return;
             }
 
-            // --- /quests ---
             if (interaction.commandName === "quests") {
                 await showUserQuests(interaction, interaction.user.id);
                 return;
             }
 
-            // --- /whitelisted ---
             if (interaction.commandName === "whitelisted") {
                 const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
                 if (!isAdmin) {
                     try {
                         await interaction.reply({
-                            content: "Bạn cần có quyền Quản trị viên (Administrator) để xem danh sách whitelist.",
+                            content: "You need Administrator permissions to view the whitelist.",
                             flags: 64
                         });
                     } catch (_) {}
@@ -943,7 +889,7 @@ client.on("interactionCreate", async (interaction) => {
                 if (entries.length === 0) {
                     try {
                         await interaction.reply({
-                            content: "Chưa có tài khoản nào được whitelist.",
+                            content: "No accounts have been whitelisted yet.",
                             flags: 64
                         });
                     } catch (err) {
@@ -954,7 +900,7 @@ client.on("interactionCreate", async (interaction) => {
 
                 const embed = new EmbedBuilder()
                     .setColor(0x2b2d31)
-                    .setTitle("Danh sách Whitelist")
+                    .setTitle("Whitelist Accounts")
                     .setDescription(
                         entries.map(([userId, data], idx) =>
                             `**${idx + 1}.** ${data.username} — \`${userId}\``
@@ -970,7 +916,6 @@ client.on("interactionCreate", async (interaction) => {
                 return;
             }
 
-            // --- /unwhitelist [user] ---
             if (interaction.commandName === "unwhitelist") {
                 const targetUser = interaction.options.getUser("user");
                 const callerId = interaction.user.id;
@@ -995,7 +940,7 @@ client.on("interactionCreate", async (interaction) => {
 
                     if (!isAdmin && targetEntry && targetEntry.addedBy !== callerId && targetIdToRemove !== callerId) {
                         await interaction.reply({
-                            content: "Bạn không có quyền xóa tài khoản của người khác (yêu cầu quyền Quản trị viên).",
+                            content: "You do not have permission to remove other users' accounts (Administrator required).",
                             flags: 64
                         });
                         return;
@@ -1015,7 +960,7 @@ client.on("interactionCreate", async (interaction) => {
 
                 if (!targetIdToRemove || !targetEntry) {
                     await interaction.reply({
-                        content: "Không tìm thấy tài khoản tương ứng trong danh sách whitelist.",
+                        content: "No matching account found in whitelist.",
                         flags: 64
                     });
                     return;
@@ -1023,7 +968,7 @@ client.on("interactionCreate", async (interaction) => {
 
                 if (activeSessions.has(targetIdToRemove)) {
                     await interaction.reply({
-                        content: `Tài khoản **${targetEntry.username}** đang trong phiên cày ọp. Vui lòng đợi phiên cày hoàn thành trước khi xóa!`,
+                        content: `Account **${targetEntry.username}** is currently in an active session. Please wait until it completes!`,
                         flags: 64
                     });
                     return;
@@ -1032,16 +977,16 @@ client.on("interactionCreate", async (interaction) => {
                 delete whitelist[targetIdToRemove];
                 saveWhitelist(whitelist);
 
-                console.log(`[Whitelist] Đã xóa: ${targetEntry.username} (${targetIdToRemove}) bởi ${interaction.user.tag}`);
+                console.log(`[Whitelist] Removed: ${targetEntry.username} (${targetIdToRemove}) by ${interaction.user.tag}`);
 
                 const embed = new EmbedBuilder()
                     .setColor(0xED4245)
-                    .setTitle("Đã Xóa Khỏi Whitelist")
+                    .setTitle("Removed from Whitelist")
                     .setDescription(
-                        `• **Tài khoản:** ${targetEntry.username}\n` +
+                        `• **Account:** ${targetEntry.username}\n` +
                         `• **ID:** \`${targetIdToRemove}\`\n` +
-                        `• **Người thực hiện:** <@${callerId}>\n\n` +
-                        `Tài khoản này đã được xóa khỏi hệ thống cày ọp.`
+                        `• **Executed by:** <@${callerId}>\n\n` +
+                        `This account has been removed from the quest completer system.`
                     )
                     .setTimestamp();
 
@@ -1049,28 +994,27 @@ client.on("interactionCreate", async (interaction) => {
                 return;
             }
 
-            // --- /autoschedule <ngay> ---
             if (interaction.commandName === "autoschedule") {
                 const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
                 if (!isAdmin) {
                     try {
                         await interaction.reply({
-                            content: "Bạn cần có quyền Quản trị viên (Administrator) để thiết lập lịch cày tự động.",
+                            content: "You need Administrator permissions to configure auto-schedule.",
                             flags: 64
                         });
                     } catch (_) {}
                     return;
                 }
 
-                const dayValue = parseInt(interaction.options.getString("ngay"));
+                const dayOptStr = interaction.options.getString("day") || interaction.options.getString("ngay");
+                const dayValue = parseInt(dayOptStr);
 
-                // Tắt lịch
                 if (dayValue < 0) {
                     saveSchedule({ day: null, hour: 8, channelId: null, lastRunDate: null });
-                    console.log("[Auto-Schedule] Đã tắt lịch tự động.");
+                    console.log("[Auto-Schedule] Auto-schedule disabled.");
                     try {
                         await interaction.reply({
-                            content: "Đã **tắt** lịch tự động cày ọp.",
+                            content: "Auto-schedule has been **disabled**.",
                             flags: 64
                         });
                     } catch (err) {
@@ -1079,7 +1023,7 @@ client.on("interactionCreate", async (interaction) => {
                     return;
                 }
 
-                const hourOpt = interaction.options.getInteger("gio");
+                const hourOpt = interaction.options.getInteger("hour") ?? interaction.options.getInteger("gio");
                 const hourValue = (hourOpt !== null && hourOpt !== undefined) ? hourOpt : 8;
 
                 const schedule = loadSchedule();
@@ -1090,17 +1034,17 @@ client.on("interactionCreate", async (interaction) => {
                 saveSchedule(schedule);
 
                 const hourStr = `${String(hourValue).padStart(2, "0")}:00`;
-                console.log(`[Auto-Schedule] Đã lên lịch: ${DAY_NAMES[dayValue]} lúc ${hourStr}, kênh: ${interaction.channelId}`);
+                console.log(`[Auto-Schedule] Scheduled: ${DAY_NAMES[dayValue]} at ${hourStr}, channel: ${interaction.channelId}`);
 
                 const embed = new EmbedBuilder()
                     .setColor(0x23A55A)
-                    .setTitle("Auto-Schedule Đã Thiết Lập")
+                    .setTitle("Auto-Schedule Configured")
                     .setDescription(
-                        `Bot sẽ tự động cày ọp cho **tất cả tài khoản whitelist** vào:\n\n` +
-                        `• **${DAY_NAMES[dayValue]}** hàng tuần (từ ~${hourStr})\n` +
-                        `• **Kênh:** <#${interaction.channelId}>\n\n` +
-                        `Kết quả sẽ được gửi vào kênh này.\n` +
-                        `Dùng \`/autoschedule\` → **Tắt lịch** để hủy.`
+                        `The bot will automatically complete quests for **all whitelisted accounts** on:\n\n` +
+                        `• **${DAY_NAMES[dayValue]}** weekly (from ~${hourStr})\n` +
+                        `• **Channel:** <#${interaction.channelId}>\n\n` +
+                        `Results will be posted in this channel.\n` +
+                        `Use \`/autoschedule\` → **Disable schedule** to cancel.`
                     )
                     .setTimestamp();
 
@@ -1112,13 +1056,12 @@ client.on("interactionCreate", async (interaction) => {
                 return;
             }
 
-            // --- /setchannellog ---
             if (interaction.commandName === "setchannellog") {
                 const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
                 if (!isAdmin) {
                     try {
                         await interaction.reply({
-                            content: "Bạn cần có quyền Quản trị viên (Administrator) để thiết lập kênh log.",
+                            content: "You need Administrator permissions to configure the log channel.",
                             flags: 64
                         });
                     } catch (_) {}
@@ -1129,7 +1072,7 @@ client.on("interactionCreate", async (interaction) => {
                 if (!targetChannel || !targetChannel.isTextBased()) {
                     try {
                         await interaction.reply({
-                            content: "Vui lòng chọn một kênh văn bản hợp lệ.",
+                            content: "Please select a valid text channel.",
                             flags: 64
                         });
                     } catch (_) {}
@@ -1139,12 +1082,12 @@ client.on("interactionCreate", async (interaction) => {
                 config.logChannelId = targetChannel.id;
                 saveConfig(config);
 
-                console.log(`[Log Channel] Đã cài đặt kênh log: #${targetChannel.name} (${targetChannel.id})`);
+                console.log(`[Log Channel] Log channel set to: #${targetChannel.name} (${targetChannel.id})`);
 
                 const embed = new EmbedBuilder()
                     .setColor(0x23A55A)
-                    .setTitle("Cài Đặt Kênh Log Thành Công")
-                    .setDescription(`Đã thiết lập kênh gửi log tiến trình quest thành <#${targetChannel.id}>.`)
+                    .setTitle("Log Channel Configured Successfully")
+                    .setDescription(`Quest progress log channel has been set to <#${targetChannel.id}>.`)
                     .setTimestamp();
 
                 try {
@@ -1156,9 +1099,6 @@ client.on("interactionCreate", async (interaction) => {
             }
         }
 
-        // ================================================================
-        // MODAL SUBMIT: Whitelist Token
-        // ================================================================
         if (interaction.isModalSubmit() && interaction.customId === "ivyseal_modal_whitelist") {
             try {
                 await interaction.deferReply({ flags: 64 });
@@ -1192,15 +1132,15 @@ client.on("interactionCreate", async (interaction) => {
                 };
                 saveWhitelist(whitelist);
 
-                console.log(`[Whitelist] ${isUpdate ? "Cập nhật" : "Thêm mới"}: ${displayTag} (${userId}) bởi ${interaction.user.tag}`);
+                console.log(`[Whitelist] ${isUpdate ? "Updated" : "Added"}: ${displayTag} (${userId}) by ${interaction.user.tag}`);
 
                 const embed = new EmbedBuilder()
                     .setColor(0x23A55A)
-                    .setTitle(isUpdate ? "Đã Cập Nhật Whitelist" : "Đã Thêm Vào Whitelist")
+                    .setTitle(isUpdate ? "Whitelist Updated" : "Added to Whitelist")
                     .setDescription(
-                        `• **Tài khoản:** ${displayTag}\n` +
+                        `• **Account:** ${displayTag}\n` +
                         `• **ID:** \`${userId}\`\n` +
-                        `• **Trạng thái:** ${isUpdate ? "Token đã được cập nhật" : "Đã thêm thành công"}`
+                        `• **Status:** ${isUpdate ? "Token updated successfully" : "Successfully added"}`
                     )
                     .setTimestamp();
 
@@ -1210,24 +1150,18 @@ client.on("interactionCreate", async (interaction) => {
 
                 await interaction.editReply({ embeds: [embed] });
             } catch (err) {
-                console.error(`[Whitelist] Lỗi xác thực token: ${err.message}`);
+                console.error(`[Whitelist] Token validation error: ${err.message}`);
                 await interaction.editReply({
-                    content: `Token không hợp lệ hoặc đã hết hạn: ${err.message}`
+                    content: `Invalid or expired token: ${err.message}`
                 });
             }
             return;
         }
 
-        // ================================================================
-        // BUTTONS
-        // ================================================================
-
-        // --- 🔥 Cày Ọp ---
         if (interaction.isButton() && interaction.customId === "ivyseal_btn_cay_op") {
             const whitelist = loadWhitelist();
             const callerId = interaction.user.id;
 
-            // Tìm tài khoản theo callerId: hoặc là key, hoặc do callerId thêm
             let entry = whitelist[callerId];
             let targetUserId = callerId;
             if (!entry) {
@@ -1241,7 +1175,7 @@ client.on("interactionCreate", async (interaction) => {
             if (!entry) {
                 try {
                     await interaction.reply({
-                        content: "Bạn chưa được whitelist!\n> Vui lòng liên hệ **@ivy.ls** để được cấp quyền whitelist tài khoản.",
+                        content: "You are not whitelisted!\n> Please contact **@ivy.ls** to request access.",
                         flags: 64
                     });
                 } catch (_) {}
@@ -1251,8 +1185,8 @@ client.on("interactionCreate", async (interaction) => {
             const currentSession = activeSessions.get(targetUserId);
             if (currentSession) {
                 const msg = currentSession.type === "auto"
-                    ? "Tài khoản này đang được hệ thống **Auto-Schedule** tự động cày!\nVui lòng không bấm cày lại để tránh bị Discord giới hạn (rate limit)."
-                    : "Tài khoản này đang trong một phiên cày khác. Vui lòng đợi hoàn thành!";
+                    ? "This account is currently being processed by **Auto-Schedule**!\nPlease avoid re-triggering to prevent rate limits."
+                    : "This account already has an active session running. Please wait for it to complete!";
                 try {
                     await interaction.reply({
                         content: msg,
@@ -1276,15 +1210,15 @@ client.on("interactionCreate", async (interaction) => {
             if (!health.ok && health.dead) {
                 await sendQuestLog({
                     user: interaction.user,
-                    accountName: "Đang kết nối...",
+                    accountName: "Connecting...",
                     completedCount: 0,
                     elapsedSeconds: 0,
-                    status: "Lỗi (Token Discord không hợp lệ hoặc đã bị đổi.)",
+                    status: "Error (Discord token is invalid or changed.)",
                     isError: true
                 });
                 try {
                     await interaction.editReply({
-                        content: `Token của tài khoản **${username}** đã hết hạn hoặc không hợp lệ. Vui lòng dùng lệnh \`/whitelist\` để cập nhật lại token!`
+                        content: `Token for account **${username}** has expired or is invalid. Please use \`/whitelist\` to update your token!`
                     });
                 } catch (_) {}
                 return;
@@ -1299,9 +1233,8 @@ client.on("interactionCreate", async (interaction) => {
             let lastUpdateTime = 0;
             const startTime = Date.now();
 
-            console.log(`[Cày Ọp] Bắt đầu cho: ${username} (${targetUserId})`);
+            console.log(`[DQC] Starting for: ${username} (${targetUserId})`);
 
-            // Gửi tin nhắn khởi tạo vào Direct Message (DM) để khi người dùng F5/reload không bị mất
             let dmMessage = null;
             try {
                 const initialFiles = fs.existsSync(BANNER_PATH)
@@ -1309,23 +1242,20 @@ client.on("interactionCreate", async (interaction) => {
                     : [];
                 const initialEmbed = new EmbedBuilder()
                     .setColor(0x5865F2)
-                    .setTitle("Tự Động Cày Ọp — Tiến Trình Riêng")
+                    .setTitle("Auto Quest Completer — Private Session")
                     .setImage("attachment://banner.png")
-                    .setDescription(`Đang khởi tạo danh sách nhiệm vụ cho tài khoản **${username}**...`);
+                    .setDescription(`Initializing quest list for account **${username}**...`);
                 dmMessage = await interaction.user.send({ embeds: [initialEmbed], files: initialFiles });
-                console.log(`[Cày Ọp] Đã mở DM theo dõi cho người dùng: ${interaction.user.tag}`);
+                console.log(`[DQC] Opened tracking DM for user: ${interaction.user.tag}`);
             } catch (err) {
-                console.warn(`[Cày Ọp] Không thể gửi DM cho ${interaction.user.tag}: ${err.message}`);
+                console.warn(`[DQC] Could not send DM to ${interaction.user.tag}: ${err.message}`);
             }
 
-            // Hàm đồng bộ cập nhật cả ephemeral reply và tin nhắn riêng (DM)
             const updateBoth = async (payload) => {
-                // 1. Cập nhật ephemeral reply trên server (nếu token interaction chưa hết hạn)
                 try {
                     await interaction.editReply(payload);
                 } catch (_) {}
 
-                // 2. Cập nhật tin nhắn riêng (DM) - luôn tồn tại vĩnh viễn, không bị mất khi F5
                 if (dmMessage) {
                     try {
                         await dmMessage.edit(payload);
@@ -1392,7 +1322,7 @@ client.on("interactionCreate", async (interaction) => {
                         accountName: entry.username || username,
                         completedCount: 0,
                         elapsedSeconds: elapsedSec,
-                        status: `Lỗi (${outcome.error})`,
+                        status: `Error (${outcome.error})`,
                         isError: true
                     });
                 } else {
@@ -1412,7 +1342,7 @@ client.on("interactionCreate", async (interaction) => {
                     }
                     const finalOrbs = cachedIsPremium ? totalOrbsNitro : totalOrbsBase;
                     const orbDesc = cachedIsPremium
-                        ? `${finalOrbs.toLocaleString()} Orbs (Đã có Nitro 1.2x)`
+                        ? `${finalOrbs.toLocaleString()} Orbs (Nitro 1.2x applied)`
                         : `${finalOrbs.toLocaleString()} Orbs`;
 
                     const finishTime = Date.now();
@@ -1420,23 +1350,23 @@ client.on("interactionCreate", async (interaction) => {
                     const elapsedStr = formatTime(elapsedSec);
                     const finishUnix = Math.floor(finishTime / 1000);
 
-                    let desc = `• **Tài khoản :** ${username}\n` +
-                               `• **Tổng nhận :** ${orbDesc}\n` +
-                               `• **Hoàn thành :** ${successQuests.length}/${outcome.results.length} nhiệm vụ\n`;
+                    let desc = `• **Account :** ${username}\n` +
+                               `• **Total Earned :** ${orbDesc}\n` +
+                               `• **Completed :** ${successQuests.length}/${outcome.results.length} quests\n`;
 
                     if (skippedQuests.length > 0) {
-                        desc += `• **Bỏ qua (cần tự vào game) :** ${skippedQuests.length} nhiệm vụ\n` +
+                        desc += `• **Skipped (manual gameplay required) :** ${skippedQuests.length} quests\n` +
                                 `> *${skippedQuests.map(q => q.questName).join(", ")}*\n`;
                     }
                     if (failQuests.length > 0) {
-                        desc += `• **Thất bại :** ${failQuests.length} nhiệm vụ\n`;
+                        desc += `• **Failed :** ${failQuests.length} quests\n`;
                     }
-                    desc += `• **Thời gian hoàn thành :** <t:${finishUnix}:T> (khoảng ${elapsedStr})\n`;
-                    desc += `\n• **Lưu ý :** Vui lòng vào Discord để nhận thưởng cho các quest đã hoàn thành bạn nhé !`;
+                    desc += `• **Completion Time :** <t:${finishUnix}:T> (about ${elapsedStr})\n`;
+                    desc += `\n• **Notice :** Please head to Discord to claim rewards for completed quests!`;
 
                     const finalEmbed = new EmbedBuilder()
                         .setColor(0x23A55A)
-                        .setTitle("Tự Động Cày Ọp — Hoàn Thành")
+                        .setTitle("Auto Quest Completer — Completed")
                         .setImage("attachment://banner.png")
                         .setDescription(desc);
 
@@ -1445,7 +1375,7 @@ client.on("interactionCreate", async (interaction) => {
                         : [];
 
                     await updateBoth({ embeds: [finalEmbed], files });
-                    console.log(`[Cày Ọp] Hoàn thành cho ${username}: ${successQuests.length} thành công, ${failQuests.length} thất bại, ${skippedQuests.length} bỏ qua. Thời gian: ${elapsedStr}.`);
+                    console.log(`[DQC] Finished for ${username}: ${successQuests.length} succeeded, ${failQuests.length} failed, ${skippedQuests.length} skipped. Duration: ${elapsedStr}.`);
 
                     const avatarUrl = interaction.user.displayAvatarURL({ extension: "png", size: 256 }) || entry.avatarUrl;
                     await sendQuestLog({
@@ -1453,16 +1383,15 @@ client.on("interactionCreate", async (interaction) => {
                         accountName: entry.username || username,
                         completedCount: successQuests.length,
                         elapsedSeconds: elapsedSec,
-                        status: "Hoàn tất",
+                        status: "Completed",
                         isError: false,
                         avatarUrl
                     });
 
-                    // Gửi thông báo kèm tin nhắn ping trong DM để người dùng biết khi hoàn thành
                     if (dmMessage) {
                         try {
                             await interaction.user.send({
-                                content: `**Hoàn thành cày ọp cho tài khoản ${username}!**\n> Nhận được: **${orbDesc}** (${successQuests.length}/${outcome.results.length} nhiệm vụ thành công).\n> Thời gian hoàn thành: <t:${finishUnix}:T> (mất ${elapsedStr}).\n> Bạn hãy vào Discord kiểm tra và nhận thưởng nhé!`
+                                content: `**Quest completion finished for account ${username}!**\n> Earned: **${orbDesc}** (${successQuests.length}/${outcome.results.length} quests succeeded).\n> Completion time: <t:${finishUnix}:T> (took ${elapsedStr}).\n> Please check Discord and claim your rewards!`
                             });
                         } catch (_) {}
                     }
@@ -1474,42 +1403,40 @@ client.on("interactionCreate", async (interaction) => {
                     accountName: entry.username || username,
                     completedCount: 0,
                     elapsedSeconds: elapsedSec,
-                    status: `Lỗi (${err.message})`,
+                    status: `Error (${err.message})`,
                     isError: true
                 });
-                console.error(`[Cày Ọp] Lỗi tiến trình cho ${username}:`, err);
+                console.error(`[DQC] Progress error for ${username}:`, err);
             } finally {
                 activeSessions.delete(targetUserId);
             }
             return;
         }
 
-        // --- Xem Danh Sách Quest ---
         if (interaction.isButton() && interaction.customId === "ivyseal_btn_view_quests") {
             await showUserQuests(interaction, interaction.user.id);
             return;
         }
 
-        // --- Hướng dẫn lấy token ---
         if (interaction.isButton() && interaction.customId === "ivyseal_btn_guide") {
             const guideContainer = new ContainerBuilder()
                 .setAccentColor(0x2b2d31)
                 .addTextDisplayComponents(
                     new TextDisplayBuilder().setContent(
-                        "# Hướng dẫn lấy token tài khoản\n\n" +
-                        "1. Mở Developer Tools (nhấn **F12**) và chuyển sang tab **Application**.\n" +
-                        "2. Ở thanh bên trái, mở rộng **Local Storage** → chọn **https://discord.com**.\n" +
-                        "3. Tại ô tìm kiếm (Filter), gõ `token`.\n" +
-                        "4. Token của bạn sẽ xuất hiện ở cột **Value** (bỏ dấu ngoặc kép nếu có).\n\n" +
-                        "Video hướng dẫn: https://www.youtube.com/watch?v=OUd37MWgBfs\n\n" +
-                        "⚠️ **Cảnh báo bảo mật:**\n" +
-                        "-# Discord token hoạt động như mật khẩu. Không chia sẻ công khai hoặc dán vào trang web không tin cậy. Nếu nghi ngờ token bị lộ, hãy đổi mật khẩu ngay lập tức."
+                        "# How to Retrieve Your Discord Token\n\n" +
+                        "1. Open Developer Tools (press **F12**) and switch to the **Application** tab.\n" +
+                        "2. In the left sidebar, expand **Local Storage** → select **https://discord.com**.\n" +
+                        "3. In the search/filter box, type `token`.\n" +
+                        "4. Your token will appear in the **Value** column (remove surrounding quotes if present).\n\n" +
+                        "Video tutorial: https://www.youtube.com/watch?v=OUd37MWgBfs\n\n" +
+                        "⚠️ **Security Warning:**\n" +
+                        "-# Your Discord token grants full access to your account. Never share it publicly or paste it on untrusted websites. If compromised, change your password immediately."
                     )
                 )
                 .addActionRowComponents(
                     new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
-                            .setLabel("Xem Video Hướng Dẫn")
+                            .setLabel("Watch Video Tutorial")
                             .setStyle(ButtonStyle.Link)
                             .setURL("https://www.youtube.com/watch?v=OUd37MWgBfs")
                     )
@@ -1528,18 +1455,15 @@ client.on("interactionCreate", async (interaction) => {
 
     } catch (error) {
         if (error.code === 10062 || error.code === 40060) return;
-        console.error("[Bot] Lỗi tương tác:", error);
+        console.error("[Bot] Interaction error:", error);
     }
 });
 
-// ============================================================================
-// KHỞI CHẠY BOT
-// ============================================================================
 if (!config.botToken) {
-    console.log("\n[Bot] Chưa điền Bot Token vào file config.json.");
-    console.log("[Bot] Mở file config.json và điền botToken + clientId.\n");
+    console.log("\n[Bot] Bot Token not found in config.json.");
+    console.log("[Bot] Open config.json and enter your botToken and clientId.\n");
 } else {
     client.login(config.botToken).catch(err => {
-        console.error("[Bot] Lỗi đăng nhập:", err.message);
+        console.error("[Bot] Login error:", err.message);
     });
 }

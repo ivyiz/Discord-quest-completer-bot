@@ -1,6 +1,6 @@
 {
-  "botToken": "DÁN_BOT_TOKEN_CỦA_BẠN_VÀO_ĐÂY",
-  "clientId": "DÁN_APPLICATION_ID_VÀO_ĐÂY",
-  "guildId": "ID_SERVER_CỦA_BẠN_(TÙY_CHỌN)",
-  "logChannelId": "ID_KENH_LOG_(TÙY_CHỌN)"
+  "botToken": "PASTE_YOUR_BOT_TOKEN_HERE",
+  "clientId": "PASTE_YOUR_APPLICATION_ID_HERE",
+  "guildId": "YOUR_SERVER_ID_(OPTIONAL)",
+  "logChannelId": "YOUR_LOG_CHANNEL_ID_(OPTIONAL)"
 }
