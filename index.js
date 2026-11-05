@@ -483,7 +483,7 @@ async function showUserQuests(interaction, callerId) {
     }
 }
 
-function createSpawnPayload(userId = null) {
+function createSpawnPayload(userId = null, isEdit = false) {
     const container = new ContainerBuilder()
         .setAccentColor(0x2b2d31);
 
@@ -503,7 +503,9 @@ function createSpawnPayload(userId = null) {
 
     const files = [];
     if (fs.existsSync(BANNER_PATH)) {
-        files.push(new AttachmentBuilder(BANNER_PATH, { name: "banner.png" }));
+        if (!isEdit) {
+            files.push(new AttachmentBuilder(BANNER_PATH, { name: "banner.png" }));
+        }
         container.addMediaGalleryComponents(
             new MediaGalleryBuilder().addItems(
                 new MediaGalleryItemBuilder().setURL("attachment://banner.png")
@@ -532,11 +534,14 @@ function createSpawnPayload(userId = null) {
 
     container.addActionRowComponents(buttons);
 
-    return {
+    const payload = {
         components: [container],
-        flags: MessageFlags.IsComponentsV2,
-        files
+        flags: MessageFlags.IsComponentsV2
     };
+    if (!isEdit && files.length > 0) {
+        payload.files = files;
+    }
+    return payload;
 }
 
 const createSpawnEmbed = createSpawnPayload;
@@ -1567,13 +1572,14 @@ async function executeManualQuestSession({ interaction, targetUserId, entry, use
 
         if (interaction.isButton() && interaction.customId === "ivyseal_btn_lang") {
             const currentLang = getUserLang(interaction.user.id);
+            const msgId = interaction.message?.id || "";
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
-                    .setCustomId("ivyseal_set_lang_vi")
+                    .setCustomId(`ivyseal_set_lang_vi_${msgId}`)
                     .setLabel("🇻🇳 Tiếng Việt")
                     .setStyle(currentLang === "vi" ? ButtonStyle.Success : ButtonStyle.Secondary),
                 new ButtonBuilder()
-                    .setCustomId("ivyseal_set_lang_en")
+                    .setCustomId(`ivyseal_set_lang_en_${msgId}`)
                     .setLabel("🇺🇸 English")
                     .setStyle(currentLang === "en" ? ButtonStyle.Success : ButtonStyle.Secondary)
             );
@@ -1585,17 +1591,24 @@ async function executeManualQuestSession({ interaction, targetUserId, entry, use
             return;
         }
 
-        if (interaction.isButton() && interaction.customId === "ivyseal_set_lang_vi") {
-            setUserLang(interaction.user.id, "vi");
-            await interaction.update({
-                content: t(interaction.user.id, "langUpdated"),
-                components: []
-            });
-            return;
-        }
+        if (interaction.isButton() && interaction.customId.startsWith("ivyseal_set_lang_")) {
+            const parts = interaction.customId.split("_");
+            const lang = parts[3];
+            const msgId = parts.slice(4).join("_");
 
-        if (interaction.isButton() && interaction.customId === "ivyseal_set_lang_en") {
-            setUserLang(interaction.user.id, "en");
+            setUserLang(interaction.user.id, lang);
+
+            if (msgId && interaction.channel) {
+                try {
+                    const dashboardMsg = await interaction.channel.messages.fetch(msgId).catch(() => null);
+                    if (dashboardMsg && dashboardMsg.editable) {
+                        await dashboardMsg.edit(createSpawnPayload(interaction.user.id, true));
+                    }
+                } catch (err) {
+                    console.warn("[Dashboard Edit Warning]:", err.message);
+                }
+            }
+
             await interaction.update({
                 content: t(interaction.user.id, "langUpdated"),
                 components: []
