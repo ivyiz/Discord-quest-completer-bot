@@ -1,19 +1,21 @@
-const CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
-const ELECTRON_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9175 Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36";
+const { UserGatewayConnection } = require("./gateway-client.js");
+
+const CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
+const ELECTRON_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9180 Chrome/132.0.6834.196 Electron/34.2.0 Safari/537.36";
 const SUPER_PROPERTIES = Buffer.from(JSON.stringify({
     os: "Windows",
     browser: "Chrome",
     device: "",
     system_locale: "en-US",
     browser_user_agent: CHROME_UA,
-    browser_version: "128.0.0.0",
-    os_version: "10",
+    browser_version: "134.0.0.0",
+    os_version: "10.0.22631",
     referrer: "",
     referring_domain: "",
     referrer_current: "",
     referring_domain_current: "",
     release_channel: "stable",
-    client_build_number: 619060,
+    client_build_number: 382400,
     client_event_source: null
 })).toString("base64");
 
@@ -239,7 +241,7 @@ function getQuestName(quest) {
     );
 }
 
-async function executeQuest(token, quest, onProgress) {
+async function executeQuest(token, quest, onProgress, gatewayConn = null) {
     const questId = quest.id;
     const questName = getQuestName(quest);
     const userStatus = quest.user_status;
@@ -279,6 +281,9 @@ async function executeQuest(token, quest, onProgress) {
     }
 
     const task = detectQuestTask(quest);
+    if (gatewayConn) {
+        gatewayConn.updateActivity(questName, task.appId);
+    }
     const targetSec = task.target || 900;
     let curSec = userStatus?.progress?.[task.keyName]?.value || 0;
 
@@ -522,5 +527,6 @@ module.exports = {
     detectQuestTask,
     executeQuest,
     randomDelay,
-    getQuestIntermissionDelay
+    getQuestIntermissionDelay,
+    UserGatewayConnection
 };

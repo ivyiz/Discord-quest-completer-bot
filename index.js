@@ -38,8 +38,10 @@ const {
     isQuestExpired,
     detectQuestTask,
     randomDelay,
-    getQuestIntermissionDelay
+    getQuestIntermissionDelay,
+    UserGatewayConnection
 } = require("./quest-engine.js");
+const { getUserLang, setUserLang, t } = require("./i18n.js");
 
 const CONFIG_PATH = path.join(__dirname, "config.json");
 const WHITELIST_PATH = path.join(__dirname, "whitelist.json");
@@ -115,6 +117,76 @@ async function validateTokenHealth(token) {
 }
 
 const activeSessions = new Map();
+const manualQueue = [];
+
+function getActiveManualCount() {
+    let count = 0;
+    for (const session of activeSessions.values()) {
+        if (session.type === "manual") count++;
+    }
+    return count;
+}
+
+function updateBotPresence() {
+    if (!client.user) return;
+    const count = activeSessions.size;
+    if (count === 0) {
+        client.user.setPresence({
+            activities: [{
+                name: "Ivy Services | Auto Quests",
+                type: ActivityType.Streaming,
+                url: "https://www.twitch.tv/discord"
+            }],
+            status: "online"
+        });
+        return;
+    }
+
+    let latestQuestName = "Discord Quest";
+    for (const session of activeSessions.values()) {
+        if (session.currentQuestName) {
+            latestQuestName = session.currentQuestName;
+        }
+    }
+
+    const name = count > 1 ? `${latestQuestName} (${count} active)` : latestQuestName;
+    client.user.setPresence({
+        activities: [{
+            name,
+            type: ActivityType.Playing
+        }],
+        status: "online"
+    });
+}
+
+async function notifyTokenDead(userId, username) {
+    try {
+        const userObj = await client.users.fetch(userId).catch(() => null);
+        if (userObj) {
+            await userObj.send({
+                content: t(userId, "tokenInvalidDm", { username, userId })
+            }).catch(() => {});
+        }
+    } catch (_) {}
+}
+
+function processNextInManualQueue() {
+    const maxConcurrency = Math.max(1, config.maxManualConcurrentQuests || 3);
+    while (manualQueue.length > 0 && getActiveManualCount() < maxConcurrency) {
+        const nextTask = manualQueue.shift();
+        for (let i = 0; i < manualQueue.length; i++) {
+            const item = manualQueue[i];
+            try {
+                item.interaction.editReply({
+                    content: t(item.interaction.user.id, "inQueueDesc", { pos: i + 1 })
+                }).catch(() => {});
+            } catch (_) {}
+        }
+        executeManualQuestSession(nextTask).catch(err => {
+            console.error("[Manual Queue Task Error]:", err);
+        });
+    }
+}
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
@@ -309,7 +381,7 @@ async function showUserQuests(interaction, callerId) {
     if (!entry) {
         try {
             await interaction.reply({
-                content: "You are not whitelisted!\n> Please contact **@ivy.ls** to request access.",
+                content: t(callerId, "notWhitelisted"),
                 flags: 64
             });
         } catch (_) {}
@@ -328,9 +400,10 @@ async function showUserQuests(interaction, callerId) {
 
     const health = await validateTokenHealth(token);
     if (!health.ok && health.dead) {
+        await notifyTokenDead(targetUserId, username);
         try {
             await interaction.editReply({
-                content: `Token for account **${username}** has expired or is invalid. Please use \`/whitelist\` to update your token!`
+                content: t(callerId, "tokenInvalidChat")
             });
         } catch (_) {}
         return;
@@ -340,7 +413,7 @@ async function showUserQuests(interaction, callerId) {
         const quests = await fetchUserQuests(token);
         if (!quests || quests.length === 0) {
             await interaction.editReply({
-                content: `Account **${username}** currently has no available Discord quests.`
+                content: t(callerId, "noQuestsFound")
             });
             return;
         }
@@ -359,7 +432,7 @@ async function showUserQuests(interaction, callerId) {
 
         if (uncompletedQuests.length === 0) {
             await interaction.editReply({
-                content: `Account **${username}** currently has no pending quests (all quests are completed or expired).`
+                content: t(callerId, "noActiveQuests")
             });
             return;
         }
@@ -389,7 +462,7 @@ async function showUserQuests(interaction, callerId) {
 
         const embed = new EmbedBuilder()
             .setColor(0x5865F2)
-            .setTitle(`Pending Quests — ${username}`)
+            .setTitle(`${t(callerId, "questListTitle")} — ${username}`)
             .setDescription(
                 `• **Total pending quests:** ${uncompletedQuests.length}\n` +
                 `• **Total Orbs to earn:** **${totalAvailableOrbs.toLocaleString()}** Orbs (${totalNitroOrbs.toLocaleString()} with Nitro)\n\n` +
@@ -410,14 +483,13 @@ async function showUserQuests(interaction, callerId) {
     }
 }
 
-function createSpawnPayload() {
+function createSpawnPayload(userId = null) {
     const container = new ContainerBuilder()
         .setAccentColor(0x2b2d31);
 
     container.addTextDisplayComponents(
         new TextDisplayBuilder().setContent(
-            "# Auto Quest Completer\n" +
-            "Automatically complete Discord quests to earn Orbs for profile decorations"
+            t(userId, "dashboardTitle")
         )
     );
 
@@ -425,8 +497,7 @@ function createSpawnPayload() {
 
     container.addTextDisplayComponents(
         new TextDisplayBuilder().setContent(
-            "> **Note:** Please contact **@ivy.ls** to be whitelisted before clicking **Complete Quests**!\n\n" +
-            "**Disclaimer:** By using this service, we assume no liability for any actions taken regarding your account."
+            t(userId, "dashboardNote")
         )
     );
 
@@ -443,15 +514,19 @@ function createSpawnPayload() {
     const buttons = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId("ivyseal_btn_cay_op")
-            .setLabel("Complete Quests")
+            .setLabel(t(userId, "btnCompleteQuests"))
             .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
             .setCustomId("ivyseal_btn_view_quests")
-            .setLabel("View Quest List")
+            .setLabel(t(userId, "btnViewQuests"))
             .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
             .setCustomId("ivyseal_btn_guide")
-            .setLabel("How to get token")
+            .setLabel(t(userId, "btnHowToGetToken"))
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId("ivyseal_btn_lang")
+            .setLabel(t(userId, "btnLanguage"))
             .setStyle(ButtonStyle.Secondary)
     );
 
@@ -466,7 +541,7 @@ function createSpawnPayload() {
 
 const createSpawnEmbed = createSpawnPayload;
 
-function buildStatusEmbed(username, activeQuests, totalTimeSec, currentQuest = null, isPremium = false, finishTimestamp = null) {
+function buildStatusEmbed(username, activeQuests, totalTimeSec, currentQuest = null, isPremium = false, finishTimestamp = null, userId = null) {
     let totalOrbsBase = 0;
     let totalOrbsNitro = 0;
     for (const q of activeQuests) {
@@ -476,47 +551,47 @@ function buildStatusEmbed(username, activeQuests, totalTimeSec, currentQuest = n
 
     const finalOrbs = isPremium ? totalOrbsNitro : totalOrbsBase;
     const orbDesc = isPremium
-        ? `${finalOrbs.toLocaleString()} Orbs (Nitro 1.2x applied)`
+        ? `${finalOrbs.toLocaleString()} ${t(userId, "nitroApplied")}`
         : (totalOrbsNitro > totalOrbsBase
-            ? `${finalOrbs.toLocaleString()} Orbs (${totalOrbsNitro.toLocaleString()} with Nitro)`
+            ? `${finalOrbs.toLocaleString()} Orbs (${totalOrbsNitro.toLocaleString()} ${t(userId, "nitroPotential", { nitro: totalOrbsNitro.toLocaleString() })})`
             : `${finalOrbs.toLocaleString()} Orbs`);
 
     const targetTime = finishTimestamp || (Math.floor(Date.now() / 1000) + totalTimeSec);
 
-    let desc = `• **Account :** ${username}\n` +
-               `• **Total Quests :** ${activeQuests.length}\n` +
-               `• **Total Rewards :** ${orbDesc}\n`;
+    let desc = `• **${t(userId, "accountLabel")} :** ${username}\n` +
+               `• **${t(userId, "totalQuestsLabel")} :** ${activeQuests.length}\n` +
+               `• **${t(userId, "totalRewardsLabel")} :** ${orbDesc}\n`;
 
     if (currentQuest) {
         const p = Math.min(100, Math.max(0, currentQuest.percent || 0));
         const bar = createProgressBar(p);
         const statusNote = currentQuest.status === "skipped"
-            ? `\n> *Progress did not advance after several attempts. Skipping to the next quest...*`
+            ? `\n> *${t(userId, "skippedNote")}*`
             : "";
 
         desc += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-                `• **Current [${currentQuest.index + 1}/${currentQuest.total}] :** **${currentQuest.name}**${statusNote}\n` +
-                `• **Progress :** \`${bar}\`\n` +
+                `• **${t(userId, "currentQuestLabel")} [${currentQuest.index + 1}/${currentQuest.total}] :** **${currentQuest.name}**${statusNote}\n` +
+                `• **${t(userId, "progressLabel")} :** \`${bar}\`\n` +
                 `━━━━━━━━━━━━━━━━━━━━\n\n`;
     } else {
         desc += `\n━━━━━━━━━━━━━━━━━━━━\n` +
-                `• **Status :** Initializing and preparing quests...\n` +
+                `• **Status :** ${t(userId, "initStatus")}\n` +
                 `━━━━━━━━━━━━━━━━━━━━\n\n`;
     }
 
-    desc += `• **Estimated Completion :** <t:${targetTime}:R> (about ${formatTime(totalTimeSec)})\n\n` +
-            `• **Notice :** Please wait until all quests are completed before claiming your rewards!`;
+    desc += `• **${t(userId, "estCompletionLabel")} :** <t:${targetTime}:R> (about ${formatTime(totalTimeSec)})\n\n` +
+            `• **Notice :** ${t(userId, "waitNotice")}`;
 
     const embed = new EmbedBuilder()
         .setColor(0x5865F2)
-        .setTitle("Auto Quest Completer")
+        .setTitle(t(userId, "completedTitle"))
         .setImage("attachment://banner.png")
         .setDescription(desc);
 
     return embed;
 }
 
-async function runQuestsForUser(token, updateFn) {
+async function runQuestsForUser(token, updateFn, onQuestChange = null) {
     let quests;
     let userInfo;
     try {
@@ -525,7 +600,8 @@ async function runQuestsForUser(token, updateFn) {
             fetchUserInfo(token).catch(() => null)
         ]);
     } catch (err) {
-        return { error: `Invalid token: ${err.message}` };
+        const isDead = err.status === 401 || err.code === 40001 || /unauthorized|401/i.test(err.message);
+        return { error: `Invalid token: ${err.message}`, isDead };
     }
 
     if (!quests || quests.length === 0) {
@@ -569,36 +645,46 @@ async function runQuestsForUser(token, updateFn) {
 
     const results = [];
     let lastQuestWasExecuted = false;
+    const gateway = new UserGatewayConnection(token);
 
-    for (let i = 0; i < activeQuests.length; i++) {
-        const q = activeQuests[i];
+    try {
+        for (let i = 0; i < activeQuests.length; i++) {
+            const q = activeQuests[i];
+            const qName = getQuestName(q);
+            const task = detectQuestTask(q);
 
-        if (i > 0 && lastQuestWasExecuted) {
-            const delayInfo = getQuestIntermissionDelay(q);
-            console.log(`[Ivyseal DQC] Safe intermission before "${getQuestName(q)}": Resting ${delayInfo.label}...`);
-            await new Promise(r => setTimeout(r, delayInfo.ms));
-        }
+            gateway.updateActivity(qName, task.appId);
+            if (onQuestChange) onQuestChange(qName);
 
-        const result = await executeQuest(token, q, async (progress) => {
-            if (updateFn) {
-                await updateFn({
-                    phase: "progress",
-                    questIndex: i,
-                    total: activeQuests.length,
-                    progress,
-                    isPremium
-                });
+            if (i > 0 && lastQuestWasExecuted) {
+                const delayInfo = getQuestIntermissionDelay(q);
+                console.log(`[Ivyseal DQC] Safe intermission before "${qName}": Resting ${delayInfo.label}...`);
+                await new Promise(r => setTimeout(r, delayInfo.ms));
             }
-        });
 
-        lastQuestWasExecuted = result.success && !result.alreadyCompleted;
-        results.push(result);
-        if (result.skipped) {
-            console.log(`[DQC] Quest "${result.questName}": Skipped (${result.error || "Manual gameplay required"})`);
-            await new Promise(r => setTimeout(r, 2000));
-        } else {
-            console.log(`[DQC] Quest "${result.questName}": ${result.success ? "Success" : "Failed"} ${result.error || ""}`);
+            const result = await executeQuest(token, q, async (progress) => {
+                if (updateFn) {
+                    await updateFn({
+                        phase: "progress",
+                        questIndex: i,
+                        total: activeQuests.length,
+                        progress,
+                        isPremium
+                    });
+                }
+            }, gateway);
+
+            lastQuestWasExecuted = result.success && !result.alreadyCompleted;
+            results.push(result);
+            if (result.skipped) {
+                console.log(`[DQC] Quest "${result.questName}": Skipped (${result.error || "Manual gameplay required"})`);
+                await new Promise(r => setTimeout(r, 2000));
+            } else {
+                console.log(`[DQC] Quest "${result.questName}": ${result.success ? "Success" : "Failed"} ${result.error || ""}`);
+            }
         }
+    } finally {
+        gateway.destroy();
     }
 
     return { results, activeQuests, totalTimeSec, isPremium };
@@ -666,6 +752,7 @@ async function runAllWhitelistedQuests(channel) {
         if (!health.ok && health.dead) {
             console.warn(`[Auto-Schedule] Token for ${username} has expired or is invalid.`);
             allResults.push({ username, userId, error: "Token expired or invalid (/whitelist required)." });
+            await notifyTokenDead(entry.addedBy || userId, username);
             await sendQuestLog({
                 user: { id: entry.addedBy || userId, username: entry.username || username },
                 accountName: "Connecting...",
@@ -680,17 +767,28 @@ async function runAllWhitelistedQuests(channel) {
         activeSessions.set(userId, {
             type: "auto",
             username,
-            startedAt: Date.now()
+            startedAt: Date.now(),
+            currentQuestName: null
         });
+        updateBotPresence();
 
         const startAccTime = Date.now();
         try {
             console.log(`[Auto-Schedule] Processing: ${username} (${userId})`);
-            const result = await runQuestsForUser(token, null);
+            const result = await runQuestsForUser(token, null, (questName) => {
+                const session = activeSessions.get(userId);
+                if (session) {
+                    session.currentQuestName = questName;
+                    updateBotPresence();
+                }
+            });
             allResults.push({ username, userId, ...result });
 
             const elapsedSec = Math.max(1, Math.round((Date.now() - startAccTime) / 1000));
             if (result.error) {
+                if (result.isDead) {
+                    await notifyTokenDead(entry.addedBy || userId, username);
+                }
                 await sendQuestLog({
                     user: { id: entry.addedBy || userId, username: entry.username || username },
                     accountName: entry.username || username,
@@ -724,6 +822,7 @@ async function runAllWhitelistedQuests(channel) {
             });
         } finally {
             activeSessions.delete(userId);
+            updateBotPresence();
         }
     }
 
@@ -799,14 +898,7 @@ function startScheduleChecker() {
 }
 
 client.once(Events.ClientReady, async () => {
-    client.user.setPresence({
-        activities: [{
-            name: "Ivy Services | Auto Quests",
-            type: ActivityType.Streaming,
-            url: "https://www.twitch.tv/discord"
-        }],
-        status: "online"
-    });
+    updateBotPresence();
 
     botOnlineTime = getOnTimestamp();
     console.log(`\n======================================================`);
@@ -835,7 +927,7 @@ client.on("interactionCreate", async (interaction) => {
 
         if (interaction.isChatInputCommand()) {
             if (interaction.commandName === "dqcspawn") {
-                const payload = createSpawnPayload();
+                const payload = createSpawnPayload(interaction.user.id);
                 try {
                     await interaction.reply(payload);
                 } catch (err) {
@@ -1158,6 +1250,229 @@ client.on("interactionCreate", async (interaction) => {
             return;
         }
 
+async function executeManualQuestSession({ interaction, targetUserId, entry, username, token }) {
+    const callerId = interaction.user.id;
+    if (activeSessions.has(targetUserId)) {
+        try {
+            await interaction.editReply({
+                content: t(callerId, "sessionAlreadyRunning", { type: activeSessions.get(targetUserId).type })
+            });
+        } catch (_) {}
+        processNextInManualQueue();
+        return;
+    }
+
+    activeSessions.set(targetUserId, {
+        type: "manual",
+        username,
+        startedAt: Date.now(),
+        currentQuestName: null
+    });
+    updateBotPresence();
+
+    let lastUpdateTime = 0;
+    const startTime = Date.now();
+
+    console.log(`[DQC] Starting for: ${username} (${targetUserId})`);
+
+    let dmMessage = null;
+    try {
+        const initialFiles = fs.existsSync(BANNER_PATH)
+            ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
+            : [];
+        const initialEmbed = new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle(`${t(callerId, "completedTitle")} — Private Session`)
+            .setImage("attachment://banner.png")
+            .setDescription(`Initializing quest list for account **${username}**...`);
+        dmMessage = await interaction.user.send({ embeds: [initialEmbed], files: initialFiles });
+        console.log(`[DQC] Opened tracking DM for user: ${interaction.user.tag}`);
+    } catch (err) {
+        console.warn(`[DQC] Could not send DM to ${interaction.user.tag}: ${err.message}`);
+    }
+
+    const updateBoth = async (payload) => {
+        try {
+            await interaction.editReply(payload);
+        } catch (_) {}
+
+        if (dmMessage) {
+            try {
+                await dmMessage.edit(payload);
+            } catch (_) {}
+        }
+    };
+
+    try {
+        let cachedActiveQuests = [];
+        let cachedTotalTimeSec = 0;
+        let cachedIsPremium = false;
+        let cachedFinishTimestamp = null;
+
+        const outcome = await runQuestsForUser(token, async (update) => {
+            const now = Date.now();
+
+            if (update.phase === "status") {
+                cachedActiveQuests = update.activeQuests;
+                cachedTotalTimeSec = update.totalTimeSec;
+                cachedIsPremium = update.isPremium;
+                cachedFinishTimestamp = Math.floor(now / 1000) + cachedTotalTimeSec;
+
+                const embed = buildStatusEmbed(
+                    username,
+                    cachedActiveQuests,
+                    cachedTotalTimeSec,
+                    null,
+                    cachedIsPremium,
+                    cachedFinishTimestamp,
+                    callerId
+                );
+                const files = fs.existsSync(BANNER_PATH)
+                    ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
+                    : [];
+                await updateBoth({ embeds: [embed], files });
+            }
+
+            if (update.phase === "progress" && (now - lastUpdateTime > 8000 || update.progress?.percent === 100 || update.progress?.percent === 0 || update.progress?.status === "skipped")) {
+                lastUpdateTime = now;
+                const embed = buildStatusEmbed(
+                    username,
+                    cachedActiveQuests,
+                    cachedTotalTimeSec,
+                    {
+                        name: update.progress.questName,
+                        index: update.questIndex,
+                        total: update.total,
+                        percent: update.progress.percent,
+                        currentSec: update.progress.currentSec,
+                        targetSec: update.progress.targetSec,
+                        status: update.progress.status
+                    },
+                    cachedIsPremium,
+                    cachedFinishTimestamp,
+                    callerId
+                );
+                await updateBoth({ embeds: [embed] });
+            }
+        }, (questName) => {
+            const session = activeSessions.get(targetUserId);
+            if (session) {
+                session.currentQuestName = questName;
+                updateBotPresence();
+            }
+        });
+
+        if (outcome.error) {
+            if (outcome.isDead) {
+                await notifyTokenDead(targetUserId, username);
+            }
+            const elapsedSec = Math.max(0, Math.round((Date.now() - startTime) / 1000));
+            await updateBoth({ content: outcome.error, embeds: [] });
+            await sendQuestLog({
+                user: interaction.user,
+                accountName: entry.username || username,
+                completedCount: 0,
+                elapsedSeconds: elapsedSec,
+                status: `Error (${outcome.error})`,
+                isError: true
+            });
+        } else {
+            const successQuests = outcome.results.filter(r => r.success);
+            const skippedQuests = outcome.results.filter(r => r.skipped || r.requiresPlayer);
+            const failQuests = outcome.results.filter(r => !r.success && !r.skipped && !r.requiresPlayer && !r.expired);
+
+            let totalOrbsBase = 0;
+            let totalOrbsNitro = 0;
+            for (const q of cachedActiveQuests) {
+                const name = getQuestName(q);
+                const isDone = successQuests.some(sq => sq.questName === name);
+                if (isDone) {
+                    totalOrbsBase += getQuestOrbs(q, false);
+                    totalOrbsNitro += getQuestOrbs(q, true);
+                }
+            }
+            const finalOrbs = cachedIsPremium ? totalOrbsNitro : totalOrbsBase;
+            const orbDesc = cachedIsPremium
+                ? `${finalOrbs.toLocaleString()} ${t(callerId, "nitroApplied")}`
+                : `${finalOrbs.toLocaleString()} Orbs`;
+
+            const finishTime = Date.now();
+            const elapsedSec = Math.max(1, Math.round((finishTime - startTime) / 1000));
+            const elapsedStr = formatTime(elapsedSec);
+            const finishUnix = Math.floor(finishTime / 1000);
+
+            let desc = `• **${t(callerId, "accountLabel")} :** ${username}\n` +
+                       `• **${t(callerId, "totalRewardsLabel")} :** ${orbDesc}\n` +
+                       `• **${t(callerId, "completedTitle")} :** ${successQuests.length}/${outcome.results.length}\n`;
+
+            if (skippedQuests.length > 0) {
+                desc += `• **Skipped :** ${skippedQuests.length}\n` +
+                        `> *${skippedQuests.map(q => q.questName).join(", ")}*\n`;
+            }
+            if (failQuests.length > 0) {
+                desc += `• **Failed :** ${failQuests.length}\n`;
+            }
+            desc += `• **${t(callerId, "estCompletionLabel")} :** <t:${finishUnix}:T> (${elapsedStr})\n`;
+            desc += `\n• **${t(callerId, "claimNotice")}**`;
+
+            const finalEmbed = new EmbedBuilder()
+                .setColor(0x23A55A)
+                .setTitle(`${t(callerId, "completedTitle")}`)
+                .setImage("attachment://banner.png")
+                .setDescription(desc);
+
+            const files = fs.existsSync(BANNER_PATH)
+                ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
+                : [];
+
+            await updateBoth({ embeds: [finalEmbed], files });
+            console.log(`[DQC] Finished for ${username}: ${successQuests.length} succeeded, ${failQuests.length} failed, ${skippedQuests.length} skipped. Duration: ${elapsedStr}.`);
+
+            const avatarUrl = interaction.user.displayAvatarURL({ extension: "png", size: 256 }) || entry.avatarUrl;
+            await sendQuestLog({
+                user: interaction.user,
+                accountName: entry.username || username,
+                completedCount: successQuests.length,
+                elapsedSeconds: elapsedSec,
+                status: "Completed",
+                isError: false,
+                avatarUrl
+            });
+
+            if (dmMessage) {
+                try {
+                    await interaction.user.send({
+                        content: t(callerId, "completedSummary", {
+                            username,
+                            orbs: orbDesc,
+                            success: successQuests.length,
+                            total: outcome.results.length,
+                            finishUnix,
+                            elapsed: elapsedStr,
+                            notice: t(callerId, "claimNotice")
+                        })
+                    });
+                } catch (_) {}
+            }
+        }
+    } catch (err) {
+        const elapsedSec = Math.max(0, Math.round((Date.now() - startTime) / 1000));
+        await sendQuestLog({
+            user: interaction.user,
+            accountName: entry.username || username,
+            completedCount: 0,
+            elapsedSeconds: elapsedSec,
+            status: `Error (${err.message})`,
+            isError: true
+        });
+        console.error(`[DQC] Progress error for ${username}:`, err);
+    } finally {
+        activeSessions.delete(targetUserId);
+        updateBotPresence();
+        processNextInManualQueue();
+    }
+}
+
         if (interaction.isButton() && interaction.customId === "ivyseal_btn_cay_op") {
             const whitelist = loadWhitelist();
             const callerId = interaction.user.id;
@@ -1175,7 +1490,7 @@ client.on("interactionCreate", async (interaction) => {
             if (!entry) {
                 try {
                     await interaction.reply({
-                        content: "You are not whitelisted!\n> Please contact **@ivy.ls** to request access.",
+                        content: t(callerId, "notWhitelisted"),
                         flags: 64
                     });
                 } catch (_) {}
@@ -1184,12 +1499,20 @@ client.on("interactionCreate", async (interaction) => {
 
             const currentSession = activeSessions.get(targetUserId);
             if (currentSession) {
-                const msg = currentSession.type === "auto"
-                    ? "This account is currently being processed by **Auto-Schedule**!\nPlease avoid re-triggering to prevent rate limits."
-                    : "This account already has an active session running. Please wait for it to complete!";
                 try {
                     await interaction.reply({
-                        content: msg,
+                        content: t(callerId, "sessionAlreadyRunning", { type: currentSession.type }),
+                        flags: 64
+                    });
+                } catch (_) {}
+                return;
+            }
+
+            const inQueueIndex = manualQueue.findIndex(q => q.targetUserId === targetUserId);
+            if (inQueueIndex !== -1) {
+                try {
+                    await interaction.reply({
+                        content: t(callerId, "inQueueDesc", { pos: inQueueIndex + 1 }),
                         flags: 64
                     });
                 } catch (_) {}
@@ -1208,6 +1531,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const health = await validateTokenHealth(token);
             if (!health.ok && health.dead) {
+                await notifyTokenDead(targetUserId, username);
                 await sendQuestLog({
                     user: interaction.user,
                     accountName: "Connecting...",
@@ -1218,198 +1542,64 @@ client.on("interactionCreate", async (interaction) => {
                 });
                 try {
                     await interaction.editReply({
-                        content: `Token for account **${username}** has expired or is invalid. Please use \`/whitelist\` to update your token!`
+                        content: t(callerId, "tokenInvalidChat")
                     });
                 } catch (_) {}
                 return;
             }
 
-            activeSessions.set(targetUserId, {
-                type: "manual",
-                username,
-                startedAt: Date.now()
-            });
+            const maxConcurrency = Math.max(1, config.maxManualConcurrentQuests || 3);
+            const task = { interaction, targetUserId, entry, username, token };
 
-            let lastUpdateTime = 0;
-            const startTime = Date.now();
-
-            console.log(`[DQC] Starting for: ${username} (${targetUserId})`);
-
-            let dmMessage = null;
-            try {
-                const initialFiles = fs.existsSync(BANNER_PATH)
-                    ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
-                    : [];
-                const initialEmbed = new EmbedBuilder()
-                    .setColor(0x5865F2)
-                    .setTitle("Auto Quest Completer — Private Session")
-                    .setImage("attachment://banner.png")
-                    .setDescription(`Initializing quest list for account **${username}**...`);
-                dmMessage = await interaction.user.send({ embeds: [initialEmbed], files: initialFiles });
-                console.log(`[DQC] Opened tracking DM for user: ${interaction.user.tag}`);
-            } catch (err) {
-                console.warn(`[DQC] Could not send DM to ${interaction.user.tag}: ${err.message}`);
-            }
-
-            const updateBoth = async (payload) => {
+            if (getActiveManualCount() >= maxConcurrency) {
+                manualQueue.push(task);
                 try {
-                    await interaction.editReply(payload);
+                    await interaction.editReply({
+                        content: t(callerId, "inQueueDesc", { pos: manualQueue.length })
+                    });
                 } catch (_) {}
-
-                if (dmMessage) {
-                    try {
-                        await dmMessage.edit(payload);
-                    } catch (_) {}
-                }
-            };
-
-            try {
-                let cachedActiveQuests = [];
-                let cachedTotalTimeSec = 0;
-                let cachedIsPremium = false;
-                let cachedFinishTimestamp = null;
-
-                const outcome = await runQuestsForUser(token, async (update) => {
-                    const now = Date.now();
-
-                    if (update.phase === "status") {
-                        cachedActiveQuests = update.activeQuests;
-                        cachedTotalTimeSec = update.totalTimeSec;
-                        cachedIsPremium = update.isPremium;
-                        cachedFinishTimestamp = Math.floor(now / 1000) + cachedTotalTimeSec;
-
-                        const embed = buildStatusEmbed(
-                            username,
-                            cachedActiveQuests,
-                            cachedTotalTimeSec,
-                            null,
-                            cachedIsPremium,
-                            cachedFinishTimestamp
-                        );
-                        const files = fs.existsSync(BANNER_PATH)
-                            ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
-                            : [];
-                        await updateBoth({ embeds: [embed], files });
-                    }
-
-                    if (update.phase === "progress" && (now - lastUpdateTime > 8000 || update.progress?.percent === 100 || update.progress?.percent === 0 || update.progress?.status === "skipped")) {
-                        lastUpdateTime = now;
-                        const embed = buildStatusEmbed(
-                            username,
-                            cachedActiveQuests,
-                            cachedTotalTimeSec,
-                            {
-                                name: update.progress.questName,
-                                index: update.questIndex,
-                                total: update.total,
-                                percent: update.progress.percent,
-                                currentSec: update.progress.currentSec,
-                                targetSec: update.progress.targetSec,
-                                status: update.progress.status
-                            },
-                            cachedIsPremium,
-                            cachedFinishTimestamp
-                        );
-                        await updateBoth({ embeds: [embed] });
-                    }
-                });
-
-                if (outcome.error) {
-                    const elapsedSec = Math.max(0, Math.round((Date.now() - startTime) / 1000));
-                    await updateBoth({ content: outcome.error, embeds: [] });
-                    await sendQuestLog({
-                        user: interaction.user,
-                        accountName: entry.username || username,
-                        completedCount: 0,
-                        elapsedSeconds: elapsedSec,
-                        status: `Error (${outcome.error})`,
-                        isError: true
-                    });
-                } else {
-                    const successQuests = outcome.results.filter(r => r.success);
-                    const skippedQuests = outcome.results.filter(r => r.skipped || r.requiresPlayer);
-                    const failQuests = outcome.results.filter(r => !r.success && !r.skipped && !r.requiresPlayer && !r.expired);
-
-                    let totalOrbsBase = 0;
-                    let totalOrbsNitro = 0;
-                    for (const q of cachedActiveQuests) {
-                        const name = getQuestName(q);
-                        const isDone = successQuests.some(sq => sq.questName === name);
-                        if (isDone) {
-                            totalOrbsBase += getQuestOrbs(q, false);
-                            totalOrbsNitro += getQuestOrbs(q, true);
-                        }
-                    }
-                    const finalOrbs = cachedIsPremium ? totalOrbsNitro : totalOrbsBase;
-                    const orbDesc = cachedIsPremium
-                        ? `${finalOrbs.toLocaleString()} Orbs (Nitro 1.2x applied)`
-                        : `${finalOrbs.toLocaleString()} Orbs`;
-
-                    const finishTime = Date.now();
-                    const elapsedSec = Math.max(1, Math.round((finishTime - startTime) / 1000));
-                    const elapsedStr = formatTime(elapsedSec);
-                    const finishUnix = Math.floor(finishTime / 1000);
-
-                    let desc = `• **Account :** ${username}\n` +
-                               `• **Total Earned :** ${orbDesc}\n` +
-                               `• **Completed :** ${successQuests.length}/${outcome.results.length} quests\n`;
-
-                    if (skippedQuests.length > 0) {
-                        desc += `• **Skipped (manual gameplay required) :** ${skippedQuests.length} quests\n` +
-                                `> *${skippedQuests.map(q => q.questName).join(", ")}*\n`;
-                    }
-                    if (failQuests.length > 0) {
-                        desc += `• **Failed :** ${failQuests.length} quests\n`;
-                    }
-                    desc += `• **Completion Time :** <t:${finishUnix}:T> (about ${elapsedStr})\n`;
-                    desc += `\n• **Notice :** Please head to Discord to claim rewards for completed quests!`;
-
-                    const finalEmbed = new EmbedBuilder()
-                        .setColor(0x23A55A)
-                        .setTitle("Auto Quest Completer — Completed")
-                        .setImage("attachment://banner.png")
-                        .setDescription(desc);
-
-                    const files = fs.existsSync(BANNER_PATH)
-                        ? [new AttachmentBuilder(BANNER_PATH, { name: "banner.png" })]
-                        : [];
-
-                    await updateBoth({ embeds: [finalEmbed], files });
-                    console.log(`[DQC] Finished for ${username}: ${successQuests.length} succeeded, ${failQuests.length} failed, ${skippedQuests.length} skipped. Duration: ${elapsedStr}.`);
-
-                    const avatarUrl = interaction.user.displayAvatarURL({ extension: "png", size: 256 }) || entry.avatarUrl;
-                    await sendQuestLog({
-                        user: interaction.user,
-                        accountName: entry.username || username,
-                        completedCount: successQuests.length,
-                        elapsedSeconds: elapsedSec,
-                        status: "Completed",
-                        isError: false,
-                        avatarUrl
-                    });
-
-                    if (dmMessage) {
-                        try {
-                            await interaction.user.send({
-                                content: `**Quest completion finished for account ${username}!**\n> Earned: **${orbDesc}** (${successQuests.length}/${outcome.results.length} quests succeeded).\n> Completion time: <t:${finishUnix}:T> (took ${elapsedStr}).\n> Please check Discord and claim your rewards!`
-                            });
-                        } catch (_) {}
-                    }
-                }
-            } catch (err) {
-                const elapsedSec = Math.max(0, Math.round((Date.now() - startTime) / 1000));
-                await sendQuestLog({
-                    user: interaction.user,
-                    accountName: entry.username || username,
-                    completedCount: 0,
-                    elapsedSeconds: elapsedSec,
-                    status: `Error (${err.message})`,
-                    isError: true
-                });
-                console.error(`[DQC] Progress error for ${username}:`, err);
-            } finally {
-                activeSessions.delete(targetUserId);
+                return;
             }
+
+            await executeManualQuestSession(task);
+            return;
+        }
+
+        if (interaction.isButton() && interaction.customId === "ivyseal_btn_lang") {
+            const currentLang = getUserLang(interaction.user.id);
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId("ivyseal_set_lang_vi")
+                    .setLabel("🇻🇳 Tiếng Việt")
+                    .setStyle(currentLang === "vi" ? ButtonStyle.Success : ButtonStyle.Secondary),
+                new ButtonBuilder()
+                    .setCustomId("ivyseal_set_lang_en")
+                    .setLabel("🇺🇸 English")
+                    .setStyle(currentLang === "en" ? ButtonStyle.Success : ButtonStyle.Secondary)
+            );
+            await interaction.reply({
+                content: t(interaction.user.id, "selectLangPrompt"),
+                components: [row],
+                flags: 64
+            });
+            return;
+        }
+
+        if (interaction.isButton() && interaction.customId === "ivyseal_set_lang_vi") {
+            setUserLang(interaction.user.id, "vi");
+            await interaction.update({
+                content: t(interaction.user.id, "langUpdated"),
+                components: []
+            });
+            return;
+        }
+
+        if (interaction.isButton() && interaction.customId === "ivyseal_set_lang_en") {
+            setUserLang(interaction.user.id, "en");
+            await interaction.update({
+                content: t(interaction.user.id, "langUpdated"),
+                components: []
+            });
             return;
         }
 
@@ -1423,14 +1613,8 @@ client.on("interactionCreate", async (interaction) => {
                 .setAccentColor(0x2b2d31)
                 .addTextDisplayComponents(
                     new TextDisplayBuilder().setContent(
-                        "# How to Retrieve Your Discord Token\n\n" +
-                        "1. Open Developer Tools (press **F12**) and switch to the **Application** tab.\n" +
-                        "2. In the left sidebar, expand **Local Storage** → select **https://discord.com**.\n" +
-                        "3. In the search/filter box, type `token`.\n" +
-                        "4. Your token will appear in the **Value** column (remove surrounding quotes if present).\n\n" +
-                        "Video tutorial: https://www.youtube.com/watch?v=OUd37MWgBfs\n\n" +
-                        "⚠️ **Security Warning:**\n" +
-                        "-# Your Discord token grants full access to your account. Never share it publicly or paste it on untrusted websites. If compromised, change your password immediately."
+                        `# ${t(interaction.user.id, "guideTitle")}\n\n` +
+                        t(interaction.user.id, "guideDesc")
                     )
                 )
                 .addActionRowComponents(

@@ -1,5 +1,6 @@
 # Bảo vệ thông tin nhạy cảm
 config.json
+preferences.json
 
 # Logs
 logs/
